@@ -1,6 +1,6 @@
 use std::fmt;
 
-pub fn parse(text: &str) -> Data {
+pub fn parse(text: &str) -> Result<Data, Vec<crate::Error>> {
     let tokens = lex::Lexer::new(text.char_indices());
     let eof = lex::Token {
         kind: lex::TokenKind::Eof,
@@ -8,13 +8,21 @@ pub fn parse(text: &str) -> Data {
     };
 
     let mut parser = parse::Parser::new(tokens.chain(Some(eof)));
-    // TODO errors
     let ast = parser.seq_struct();
-    if let Some(ast) = ast {
-        return Data::Struct(ast);
+    if parser.errors.is_empty() {
+        if let Some(ast) = ast {
+            Ok(Data::Struct(ast))
+        } else {
+            Ok(Data::Unknown)
+        }
+    } else {
+        // TODO properly process errors
+        Err(parser
+            .errors
+            .into_iter()
+            .map(|(_, msg)| crate::Error { msg })
+            .collect())
     }
-
-    Data::Unknown
 }
 
 #[derive(Clone, Debug)]
@@ -26,13 +34,21 @@ pub enum Data {
     Tabular,
 }
 
+impl Data {
+    pub fn unwrap_structural(self) -> parse::Node {
+        match self {
+            Data::Struct(n) => n,
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl fmt::Display for Data {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Data::Struct(node) => node.fmt_dbg(f, 0),
-            _ => write!(f, "Data")?,
+            Data::Struct(node) => node.fmt(f),
+            _ => write!(f, "Data"),
         }
-        Ok(())
     }
 }
 
@@ -42,7 +58,7 @@ mod parse {
     use crate::data::lex::{Token, TokenKind};
 
     pub(super) struct Parser {
-        errors: Vec<(Token, String)>,
+        pub(super) errors: Vec<(Token, String)>,
         tokens: Vec<Token>,
         cur_tok: usize,
     }
@@ -138,76 +154,202 @@ mod parse {
         Seq(Vec<Node>),
     }
 
+    const FMT_MAX_WIDTH: usize = 80;
+    const FMT_TAB: &str = "  ";
+    const FMT_TAB_WIDTH: usize = FMT_TAB.len();
+
     impl Node {
-        pub(super) fn fmt_dbg(&self, w: &mut impl Write, indent: usize) {
-            self.kind.fmt_dbg(w, indent);
+        pub(super) fn fmt(&self, w: &mut impl Write) -> std::fmt::Result {
+            write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH))
         }
 
         pub(super) fn is_trivial(&self) -> bool {
             matches!(self.kind, NodeKind::Trivia(_))
         }
+
+        fn next_char(&self) -> char {
+            match &self.kind {
+                NodeKind::Tok(token) | NodeKind::Trivia(token) => match &token.kind {
+                    TokenKind::Word(s) => s.chars().next().unwrap(),
+                    TokenKind::Symbol(c) => *c,
+                    TokenKind::String(_) => '"',
+                    TokenKind::Newline => '\n',
+                    TokenKind::Comment(_) => '/',
+                    TokenKind::Eof => '\n',
+                },
+                NodeKind::Seq(nodes) => nodes[0].next_char(),
+            }
+        }
     }
 
     impl NodeKind {
-        fn fmt_dbg(&self, w: &mut impl Write, indent: usize) {
+        fn render(&self, indent: usize, available: usize) -> String {
             match self {
                 NodeKind::Tok(Token {
                     kind: TokenKind::String(s),
                     ..
-                }) => write!(w, "\"{s}\"").unwrap(),
+                }) => format!("\"{}\"", s.replace('\n', "\\n")),
                 NodeKind::Tok(Token {
                     kind: TokenKind::Symbol(c),
                     ..
-                }) => write!(w, "{c}").unwrap(),
+                }) => c.to_string(),
                 NodeKind::Tok(Token {
                     kind: TokenKind::Word(s),
                     ..
-                }) => write!(w, "{s}").unwrap(),
-                NodeKind::Trivia(_) => write!(w, "[..]").unwrap(),
-                NodeKind::Seq(nodes) => {
-                    if self.has_sub_seq() {
-                        let mut first = true;
-                        for n in nodes {
-                            if n.is_trivial() {
-                                continue;
-                            }
-                            if first {
-                                first = false;
-                                write!(w, "  ").unwrap();
-                            } else {
-                                write!(w, "\n").unwrap();
-                                write!(w, "{}", "  ".repeat(indent)).unwrap();
-                            }
-                            n.fmt_dbg(w, indent + 1);
-                        }
-                    } else {
-                        for n in nodes {
-                            if n.is_trivial() {
-                                continue;
-                            }
-                            n.fmt_dbg(w, 0);
-                            write!(w, " ").unwrap();
-                        }
-                    }
-                }
+                }) => s.clone(),
+                NodeKind::Trivia(_) => unreachable!(),
+                NodeKind::Seq(nodes) => Self::render_seq(nodes, indent, available),
                 _ => unreachable!(),
             }
         }
 
-        fn has_sub_seq(&self) -> bool {
-            match self {
-                NodeKind::Seq(nodes) => nodes.iter().any(|n| matches!(n.kind, NodeKind::Seq(_))),
-                _ => false,
+        fn render_seq(nodes: &[Node], indent: usize, available: usize) -> String {
+            let mut result = String::new();
+            for n in nodes {
+                if n.is_trivial() {
+                    continue;
+                }
+
+                let mut available = available.saturating_sub(result.len());
+                if let Some(prev) = result.chars().rev().next() {
+                    use CharSpacing::*;
+                    match (
+                        CharSpacing::from_for_left(prev),
+                        CharSpacing::from_for_right(n.next_char()),
+                    ) {
+                        (_, WhiteSpace) | (WhiteSpace, _) | (Tight, _) | (_, Tight) => {}
+                        _ => {
+                            result.push(' ');
+                            available = available.saturating_sub(1);
+                        }
+                    }
+                }
+
+                let next = n.kind.render(indent, available);
+                result.push_str(&next);
+
+                if next.contains('\n') || result.len() > available {
+                    return Self::render_seq_multiline(nodes, indent, available);
+                }
+            }
+            result
+        }
+
+        fn render_seq_multiline(nodes: &[Node], indent: usize, available: usize) -> String {
+            let mut result = String::new();
+            for n in nodes {
+                if n.is_trivial() {
+                    continue;
+                }
+
+                let mut available =
+                    available.saturating_sub(result.len() - result.rfind('\n').unwrap_or(0));
+                if let Some(prev) = result.chars().rev().next() {
+                    let next = n.next_char();
+                    if NEWLINE_CHARS.contains(&prev) && !NEWLINE_CHARS.contains(&next) {
+                        result.push('\n');
+                        result.push_str(&FMT_TAB.repeat(indent));
+                        available = FMT_MAX_WIDTH - indent * FMT_TAB_WIDTH;
+                    } else if indent > 0 && CLOSE_DELIMS.contains(&next) {
+                        result.push('\n');
+                        result.push_str(&FMT_TAB.repeat(indent - 1));
+                        available = FMT_MAX_WIDTH - (indent - 1) * FMT_TAB_WIDTH;
+                    } else {
+                        use CharSpacing::*;
+                        match (
+                            CharSpacing::from_for_left(prev),
+                            CharSpacing::from_for_right(next),
+                        ) {
+                            (_, WhiteSpace) | (WhiteSpace, _) | (Tight, _) | (_, Tight) => {}
+                            _ => {
+                                result.push(' ');
+                                available = available.saturating_sub(1);
+                            }
+                        }
+                    }
+                }
+
+                let next = n.kind.render(indent + 1, available);
+                result.push_str(&next);
+            }
+            result
+        }
+    }
+
+    const NEWLINE_CHARS: [char; 8] = ['{', '(', '[', '}', ')', ']', ',', ';'];
+    const CLOSE_DELIMS: [char; 3] = ['}', ')', ']'];
+    enum CharSpacing {
+        WhiteSpace,
+        Tight,
+        Loose,
+    }
+
+    impl CharSpacing {
+        fn from_for_left(c: char) -> Self {
+            match c {
+                '\'' | '"' => CharSpacing::Loose,
+                ' ' | '\n' | '\t' => CharSpacing::WhiteSpace,
+                '(' | ')' | '<' | '[' | ']' => CharSpacing::Tight,
+                '{' | '}' | '>' => CharSpacing::Loose,
+                _ if c.is_alphabetic() => CharSpacing::Loose,
+                _ if c.is_numeric() => CharSpacing::Loose,
+                '.' => CharSpacing::Tight,
+                _ => CharSpacing::Loose,
+            }
+        }
+
+        fn from_for_right(c: char) -> Self {
+            match c {
+                '\'' | '"' => CharSpacing::Loose,
+                ' ' | '\n' | '\t' => CharSpacing::WhiteSpace,
+                '(' | ')' | '<' | '[' | ']' => CharSpacing::Tight,
+                '{' | '}' | '>' => CharSpacing::Loose,
+                _ if c.is_alphabetic() => CharSpacing::Loose,
+                _ if c.is_numeric() => CharSpacing::Loose,
+                '.' | ':' | ';' | ',' => CharSpacing::Tight,
+                _ => CharSpacing::Loose,
             }
         }
     }
 
     #[cfg(test)]
     mod test {
-        use super::*;
+        //use super::*;
 
         #[test]
-        fn struct_smoke() {
+        fn fmt_smoke() {
+            let text = r#"Command {
+  source: "$foo = $bar",
+  kind: Assign(
+    Some(
+      "foo",
+    ),
+    Var(
+      "bar",
+    ),
+  ),
+  line: 0,
+}
+Command {
+  source: "$foo",
+  kind: Echo(
+    Var(
+      "foo\n",
+    ),
+  ),
+  line: 0,
+}"#;
+            let parsed = crate::data::parse(text).unwrap();
+            let node = parsed.unwrap_structural();
+            let formatted = node.kind.render(0, 80);
+            assert_eq!(
+                formatted, text,
+                "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"
+            );
+        }
+
+        #[test]
+        fn parse_struct_smoke() {
             let text = r#"Command {
     source: "$foo = $bar",
     kind: Assign(
@@ -229,7 +371,7 @@ Command {
     ),
     line: 0,
 }"#;
-            let result = crate::data::parse(text);
+            let result = crate::data::parse(text).unwrap();
             assert!(matches!(result, crate::data::Data::Struct(_)));
             eprintln!("{result}");
         }

@@ -38,11 +38,24 @@ struct Tui {
     runtime: crate::Runtime,
 }
 
+#[derive(Debug)]
+struct TuiReporter {}
+
+impl crate::Report for TuiReporter {
+    fn echo(&self, s: &str) {
+        println!("{s}");
+    }
+
+    fn report_err(&self, err: &crate::Error) {
+        println!("Error: {}", err.msg);
+    }
+}
+
 impl Tui {
     fn new(recv: Receiver<String>) -> Self {
         Tui {
             recv,
-            runtime: crate::Runtime::new(),
+            runtime: crate::Runtime::new(Box::new(TuiReporter {})),
             source: Vec::new(),
         }
     }

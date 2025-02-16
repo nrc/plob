@@ -1,17 +1,13 @@
 pub use lex::Token;
 pub use parse::Command;
 
-pub fn parse_script(text: &str) -> (Vec<Command>, Vec<(String, Token, usize)>) {
+pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
     let iter = lex::ScriptSplitter::new(text.chars());
-    let (cmds, errs): (_, Vec<(Vec<_>, _)>) = iter
+    let (cmds, errs): (Vec<_>, Vec<Vec<_>>) = iter
         .enumerate()
-        .map(|(i, line)| (parse::parse_cmd_inner(&line, i), i))
-        .map(|((cmd, errs), i)| (cmd, (errs, i)))
+        .map(|(i, line)| parse::parse_cmd_inner(&line, i))
         .unzip();
-    let errs = errs
-        .into_iter()
-        .flat_map(|(errs, i)| errs.into_iter().map(move |(msg, tok)| (msg, tok, i)));
-    (cmds, errs.collect())
+    (cmds, errs.into_iter().flatten().collect())
 }
 
 /// # Grammar
@@ -27,7 +23,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<(String, Token, usize)>) {
 /// call ::= ident `(` expr,* `)`
 /// var ::= `$`ident
 /// literal ::= int | string | blob
-pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<(String, Token)>) {
+pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<crate::Error>) {
     let mut iter = lex::ScriptSplitter::new(text.chars());
     let Some(text) = iter.next() else {
         return (
@@ -46,13 +42,110 @@ pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<(String, Token)>) {
     parse::parse_cmd_inner(&text, line)
 }
 
+fn make_err(msg: String, _tok: Token, _line: usize) -> crate::Error {
+    // TODO use token info
+    crate::Error { msg }
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecResult {
+    Echo(crate::Value),
+    Variable(String),
+    Error(Vec<crate::Error>),
+}
+
+pub fn run_cmd(cmd: Command, runtime: &mut crate::Runtime) -> ExecResult {
+    let mut ctxt = exec::Context {
+        runtime,
+        source: cmd.source,
+        src_line: cmd.line,
+    };
+    match cmd.kind {
+        parse::CmdKind::Assign(name, expr) => {
+            let value = match expr.exec(&mut ctxt) {
+                Ok(v) => v,
+                Err(e) => return ExecResult::Error(e),
+            };
+            let name = runtime.save_variable(name.map(|n| n.inner), value);
+            runtime.report(&format!("${name}"));
+            ExecResult::Variable(name)
+        }
+        parse::CmdKind::Echo(expr) => {
+            let value = match expr.exec(&mut ctxt) {
+                Ok(v) => v,
+                Err(e) => return ExecResult::Error(e),
+            };
+            runtime.echo(&value);
+            ExecResult::Echo(value)
+        }
+        parse::CmdKind::Error(_) => unreachable!(),
+    }
+}
+
+mod exec {
+    use crate::{
+        Error, Value, ValueKind, data,
+        lang::parse::{Expr, Node, NodeLoc},
+    };
+
+    pub struct Context<'a> {
+        pub runtime: &'a crate::Runtime,
+        pub source: String,
+        pub src_line: usize,
+    }
+
+    impl Context<'_> {
+        fn make_err(&self, msg: &str, loc: &NodeLoc) -> crate::Error {
+            Error {
+                msg: format!(
+                    "ERROR: {msg}\n\n{}: {}\n{}",
+                    self.src_line,
+                    self.source,
+                    loc.highlight()
+                ),
+            }
+        }
+    }
+
+    impl Node<Expr> {
+        pub fn exec(self, ctxt: &mut Context) -> Result<Value, Vec<Error>> {
+            match self.inner {
+                Expr::Var(name) => ctxt
+                    .runtime
+                    .get_variable(&name)
+                    .map(|v| v.clone())
+                    .ok_or(vec![ctxt.make_err(
+                        &format!("Unknown variable: `${name}`"),
+                        &self.location,
+                    )]),
+                Expr::Int(n) => Ok(Value {
+                    kind: ValueKind::Number(n),
+                }),
+                Expr::String(s) => Ok(Value {
+                    kind: ValueKind::String(s),
+                }),
+                Expr::Blob(b) => {
+                    let data = data::parse(&b)?;
+                    Ok(Value {
+                        kind: ValueKind::Data(data),
+                    })
+                } // Expr::Action(..) => unimplemented!(),
+                  // Expr::Pipe(..) => unimplemented!(),
+            }
+        }
+    }
+}
+
 mod parse {
+    use std::ops::Deref;
+
     use crate::lang::{
         Token,
         lex::{self, Operator, TokenKind},
+        make_err,
     };
 
-    pub(super) fn parse_cmd_inner(text: &str, line: usize) -> (Command, Vec<(String, Token)>) {
+    pub(super) fn parse_cmd_inner(text: &str, line: usize) -> (Command, Vec<crate::Error>) {
         let tokens = lex::Lexer::new(text.chars());
         let mut parser = CommandParser::new(tokens.chain(Some(Token {
             kind: TokenKind::Eof,
@@ -71,8 +164,47 @@ mod parse {
                 line,
                 kind: result,
             },
-            parser.errors,
+            parser
+                .errors
+                .into_iter()
+                .map(|(msg, tok)| make_err(msg, tok, line))
+                .collect(),
         )
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Node<T> {
+        pub inner: T,
+        pub location: NodeLoc,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct NodeLoc {
+        pub char: usize,
+        pub len: usize,
+    }
+
+    impl<T> Node<T> {
+        pub fn new(inner: T, char: usize, len: usize) -> Self {
+            Self {
+                inner,
+                location: NodeLoc { char, len },
+            }
+        }
+    }
+
+    impl NodeLoc {
+        pub fn highlight(&self) -> String {
+            format!("{}{}", " ".repeat(self.char), "^".repeat(self.len))
+        }
+    }
+
+    impl<T> Deref for Node<T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
     }
 
     #[derive(Clone, Debug)]
@@ -90,13 +222,13 @@ mod parse {
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub(super) enum CmdKind {
-        Assign(Option<String>, Expr),
-        Echo(Expr),
+        Assign(Option<Node<String>>, Node<Expr>),
+        Echo(Node<Expr>),
         Error(Token),
     }
 
-    impl From<Result<Expr, Token>> for CmdKind {
-        fn from(e: Result<Expr, Token>) -> Self {
+    impl From<Result<Node<Expr>, Token>> for CmdKind {
+        fn from(e: Result<Node<Expr>, Token>) -> Self {
             match e {
                 Ok(e) => CmdKind::Echo(e),
                 Err(t) => CmdKind::Error(t),
@@ -114,29 +246,29 @@ mod parse {
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    enum Expr {
+    pub(super) enum Expr {
         Var(String),
         Int(i64),
         String(String),
         Blob(String),
-        Action(Option<Box<Expr>>, Action),
-        Pipe(Option<Box<Expr>>, Action),
+        // Action(Option<Box<Node<Expr>>>, Node<Action>),
+        // Pipe(Option<Box<Node<Expr>>>, Node<Action>),
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    enum Action {
-        Projection(Selector),
-        Call(String, Vec<Expr>),
-    }
+    // #[derive(Clone, Debug, Eq, PartialEq)]
+    // pub(super) enum Action {
+    //     Projection(Node<Selector>),
+    //     Call(Node<String>, Vec<Node<Expr>>),
+    // }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    enum Selector {
-        Var(String),
-        Int(i64),
-        String(String),
-        Ident(String),
-        Seq(Vec<Selector>),
-    }
+    // #[derive(Clone, Debug, Eq, PartialEq)]
+    // pub(super) enum Selector {
+    //     Var(String),
+    //     Int(i64),
+    //     String(String),
+    //     Ident(String),
+    //     Seq(Vec<Selector>),
+    // }
 
     pub(super) struct CommandParser {
         tokens: Vec<Token>,
@@ -185,10 +317,13 @@ mod parse {
         /// Precondition: `=` | _ `=`
         fn assign(&mut self) -> Result<CmdKind, Token> {
             let var = match &self.peek(0).kind {
-                TokenKind::Var(_) => match self.next().kind {
-                    TokenKind::Var(name) => Some(name),
-                    _ => unreachable!(),
-                },
+                TokenKind::Var(_) => {
+                    let tok = self.next();
+                    match tok.kind {
+                        TokenKind::Var(name) => Some(Node::new(name, tok.char, tok.len)),
+                        _ => unreachable!(),
+                    }
+                }
                 TokenKind::Operator(Operator::Equals) => None,
                 _ => return Err(self.peek(0).clone()),
             };
@@ -201,13 +336,13 @@ mod parse {
         }
 
         /// expr ::= var | literal | expr project | (expr `.`)? call | `(` stmt `)`
-        fn expr(&mut self) -> Result<Expr, Token> {
+        fn expr(&mut self) -> Result<Node<Expr>, Token> {
             let t = self.next();
             match t.kind {
-                TokenKind::Var(s) => Ok(Expr::Var(s)),
-                TokenKind::Number(n) => Ok(Expr::Int(n)),
-                TokenKind::String(s) => Ok(Expr::String(s)),
-                TokenKind::Blob(s) => Ok(Expr::Blob(s)),
+                TokenKind::Var(s) => Ok(Node::new(Expr::Var(s), t.char, t.len)),
+                TokenKind::Number(n) => Ok(Node::new(Expr::Int(n), t.char, t.len)),
+                TokenKind::String(s) => Ok(Node::new(Expr::String(s), t.char, t.len)),
+                TokenKind::Blob(s) => Ok(Node::new(Expr::Blob(s), t.char, t.len)),
                 _ => {
                     self.restore_tok(t.clone());
                     Err(t)
@@ -221,10 +356,23 @@ mod parse {
         use super::*;
 
         #[track_caller]
-        fn assert_parsed(text: &str, expected: CmdKind) {
+        fn assert_assign(text: &str) -> (Option<String>, Expr) {
             let (cmd, errs) = crate::lang::parse_cmd(text, 0);
             assert!(errs.is_empty(), "{errs:#?}");
-            assert_eq!(cmd.kind, expected);
+            match cmd.kind {
+                CmdKind::Assign(n, e) => (n.map(|n| n.inner), e.inner),
+                _ => unreachable!(),
+            }
+        }
+
+        #[track_caller]
+        fn assert_echo(text: &str) -> Expr {
+            let (cmd, errs) = crate::lang::parse_cmd(text, 0);
+            assert!(errs.is_empty(), "{errs:#?}");
+            match cmd.kind {
+                CmdKind::Echo(e) => e.inner,
+                _ => unreachable!(),
+            }
         }
 
         fn s(s: &str) -> std::string::String {
@@ -233,16 +381,19 @@ mod parse {
 
         #[test]
         fn parse_assign() {
-            assert_parsed(
-                "$foo = $bar",
-                CmdKind::Assign(Some(s("foo")), Expr::Var(s("bar"))),
-            );
-            assert_parsed(" = $bar", CmdKind::Assign(None, Expr::Var(s("bar"))));
+            let (n, expr) = assert_assign("$foo = $bar");
+            assert_eq!(n.unwrap(), "foo");
+            assert_eq!(expr, Expr::Var(s("bar")));
+
+            let (n, expr) = assert_assign(" = $bar");
+            assert!(n.is_none());
+            assert_eq!(expr, Expr::Var(s("bar")));
         }
 
         #[test]
         fn parse_echo() {
-            assert_parsed("$foo", CmdKind::Echo(Expr::Var(s("foo"))));
+            let echoed = assert_echo("$foo");
+            assert_eq!(echoed, Expr::Var(s("foo")));
         }
     }
 }
@@ -473,8 +624,6 @@ mod lex {
                 return None;
             }
 
-            eprintln!("token {text}");
-
             let mut len = text.len();
 
             let kind = match self.state {
@@ -584,7 +733,6 @@ mod lex {
                         self.state = LexState::Blob;
                     }
                     (_, LexState::Str(_)) | (_, LexState::Blob) | (_, LexState::BlobStr(_)) => {
-                        eprintln!("push to str {c}");
                         self.buf.push(c);
                     }
 
