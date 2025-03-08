@@ -41,21 +41,46 @@ impl Data {
             _ => unreachable!(),
         }
     }
+
+    pub fn ty(&self) -> String {
+        match self {
+            Data::Unknown => "unknown".to_owned(),
+            Data::Atom => "atom".to_owned(),
+            Data::Sequence => "sequence".to_owned(),
+            Data::Struct(_) => "structured".to_owned(),
+            Data::Tabular => "tabular".to_owned(),
+        }
+    }
+
+    pub fn fmt(&self, w: &mut impl fmt::Write, opts: &FmtOptions) -> fmt::Result {
+        match self {
+            Data::Struct(node) => node.fmt(w, opts),
+            _ => write!(w, "Data"),
+        }
+    }
 }
 
 impl fmt::Display for Data {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Data::Struct(node) => node.fmt(f),
+            Data::Struct(node) => node.fmt(f, &FmtOptions::default()),
             _ => write!(f, "Data"),
         }
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct FmtOptions {
+    pub depth: Option<usize>,
+}
+
 mod parse {
     use std::fmt::Write;
 
-    use crate::data::lex::{Token, TokenKind};
+    use crate::data::{
+        FmtOptions,
+        lex::{Token, TokenKind},
+    };
 
     pub(super) struct Parser {
         pub(super) errors: Vec<(Token, String)>,
@@ -159,8 +184,8 @@ mod parse {
     const FMT_TAB_WIDTH: usize = FMT_TAB.len();
 
     impl Node {
-        pub(super) fn fmt(&self, w: &mut impl Write) -> std::fmt::Result {
-            write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH))
+        pub fn fmt(&self, w: &mut impl Write, opts: &FmtOptions) -> std::fmt::Result {
+            write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH, 0, opts))
         }
 
         pub(super) fn is_trivial(&self) -> bool {
@@ -183,7 +208,13 @@ mod parse {
     }
 
     impl NodeKind {
-        fn render(&self, indent: usize, available: usize) -> String {
+        fn render(
+            &self,
+            indent: usize,
+            available: usize,
+            depth: usize,
+            opts: &FmtOptions,
+        ) -> String {
             match self {
                 NodeKind::Tok(Token {
                     kind: TokenKind::String(s),
@@ -198,20 +229,44 @@ mod parse {
                     ..
                 }) => s.clone(),
                 NodeKind::Trivia(_) => unreachable!(),
-                NodeKind::Seq(nodes) => Self::render_seq(nodes, indent, available),
+                NodeKind::Seq(nodes) => Self::render_seq(nodes, indent, available, depth, opts),
                 _ => unreachable!(),
             }
         }
 
-        fn render_seq(nodes: &[Node], indent: usize, available: usize) -> String {
+        fn render_seq(
+            nodes: &[Node],
+            indent: usize,
+            available: usize,
+            depth: usize,
+            opts: &FmtOptions,
+        ) -> String {
             let mut result = String::new();
+            let mut hide = false;
             for n in nodes {
+                if hide {
+                    if is_close_delimiter(n.next_char()) {
+                        result.push_str(" ... ");
+                        hide = false;
+                    } else {
+                        continue;
+                    }
+                }
                 if n.is_trivial() {
                     continue;
                 }
 
                 let mut available = available.saturating_sub(result.len());
                 if let Some(prev) = result.chars().rev().next() {
+                    if is_open_delimiter(prev) && !is_close_delimiter(n.next_char()) {
+                        if let Some(max_depth) = opts.depth {
+                            if depth > max_depth {
+                                hide = true;
+                                continue;
+                            }
+                        }
+                    }
+
                     use CharSpacing::*;
                     match (
                         CharSpacing::from_for_left(prev),
@@ -225,19 +280,34 @@ mod parse {
                     }
                 }
 
-                let next = n.kind.render(indent, available);
+                let next = n.kind.render(indent, available, depth + 1, opts);
                 result.push_str(&next);
 
                 if next.contains('\n') || result.len() > available {
-                    return Self::render_seq_multiline(nodes, indent, available);
+                    return Self::render_seq_multiline(nodes, indent, available, depth, opts);
                 }
             }
             result
         }
 
-        fn render_seq_multiline(nodes: &[Node], indent: usize, available: usize) -> String {
+        fn render_seq_multiline(
+            nodes: &[Node],
+            indent: usize,
+            available: usize,
+            depth: usize,
+            opts: &FmtOptions,
+        ) -> String {
             let mut result = String::new();
+            let mut hide = false;
             for n in nodes {
+                if hide {
+                    if is_close_delimiter(n.next_char()) {
+                        result.push_str(" ... ");
+                        hide = false;
+                    } else {
+                        continue;
+                    }
+                }
                 if n.is_trivial() {
                     continue;
                 }
@@ -245,6 +315,15 @@ mod parse {
                 let mut available =
                     available.saturating_sub(result.len() - result.rfind('\n').unwrap_or(0));
                 if let Some(prev) = result.chars().rev().next() {
+                    if is_open_delimiter(prev) && !is_close_delimiter(n.next_char()) {
+                        if let Some(max_depth) = opts.depth {
+                            if depth > max_depth {
+                                hide = true;
+                                continue;
+                            }
+                        }
+                    }
+
                     let next = n.next_char();
                     if NEWLINE_CHARS.contains(&prev) && !NEWLINE_CHARS.contains(&next) {
                         result.push('\n');
@@ -269,15 +348,25 @@ mod parse {
                     }
                 }
 
-                let next = n.kind.render(indent + 1, available);
+                let next = n.kind.render(indent + 1, available, depth + 1, opts);
                 result.push_str(&next);
             }
             result
         }
     }
 
+    fn is_close_delimiter(c: char) -> bool {
+        CLOSE_DELIMS.contains(&c)
+    }
+
+    fn is_open_delimiter(c: char) -> bool {
+        OPEN_DELIMS.contains(&c)
+    }
+
     const NEWLINE_CHARS: [char; 8] = ['{', '(', '[', '}', ')', ']', ',', ';'];
+    const OPEN_DELIMS: [char; 3] = ['{', '(', '['];
     const CLOSE_DELIMS: [char; 3] = ['}', ')', ']'];
+
     enum CharSpacing {
         WhiteSpace,
         Tight,
@@ -314,8 +403,9 @@ mod parse {
 
     #[cfg(test)]
     mod test {
-        //use super::*;
+        use super::*;
 
+        // TODO test fmt with depth
         #[test]
         fn fmt_smoke() {
             let text = r#"Command {
@@ -341,7 +431,7 @@ Command {
 }"#;
             let parsed = crate::data::parse(text).unwrap();
             let node = parsed.unwrap_structural();
-            let formatted = node.kind.render(0, 80);
+            let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
             assert_eq!(
                 formatted, text,
                 "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"

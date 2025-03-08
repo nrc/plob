@@ -10,18 +10,22 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
     (cmds, errs.into_iter().flatten().collect())
 }
 
+// TODO `<<`
 /// # Grammar
 ///
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
-/// stmt ::= var | literal | pipe | stmt project | (expr `.`)? call
-/// pipe ::= stmt? `>` pexpr
-/// expr ::= var | literal | expr project | (expr `.`)? call | `(` stmt `)`
+/// expr ::= var | hist_var | literal | expr project | pipe | repipe | call
+/// pipe ::= lexpr? (`>` pexpr)+
+/// lexpr ::= var | hist_var | `(` expr `)`
 /// pexpr ::= project | call | `where` pexpr
+/// repipe ::= var? (`<` rexpr)+  // replay
+/// rexpr ::= hist_var,+ | pexpr
 /// project ::= `.` selector
 /// selector ::= int | ident | var | string | `(` selector,* `)`
-/// call ::= ident `(` expr,* `)`
-/// var ::= `$`ident
+/// call ::= ident `(` (ident = expr),* `)`
+/// var ::= `$` ident
+/// hist_var ::= `^`+ | `^` int
 /// literal ::= int | string | blob
 pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<crate::Error>) {
     let mut iter = lex::ScriptSplitter::new(text.chars());
@@ -42,9 +46,10 @@ pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<crate::Error>) {
     parse::parse_cmd_inner(&text, line)
 }
 
-fn make_err(msg: String, _tok: Token, _line: usize) -> crate::Error {
-    // TODO use token info
-    crate::Error { msg }
+fn make_err(msg: String, tok: Token, line: usize) -> crate::Error {
+    crate::Error {
+        msg: format!("ERROR: {msg}\n\n{}, {}: {:?}", line, tok.char, tok.kind,),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +90,7 @@ pub fn run_cmd(cmd: Command, runtime: &mut crate::Runtime) -> ExecResult {
 mod exec {
     use crate::{
         Error, Value, ValueKind, data,
-        lang::parse::{Expr, Node, NodeLoc},
+        lang::parse::{Action, Expr, Node, NodeLoc},
     };
 
     pub struct Context<'a> {
@@ -95,14 +100,109 @@ mod exec {
     }
 
     impl Context<'_> {
-        fn make_err(&self, msg: &str, loc: &NodeLoc) -> crate::Error {
+        fn make_err(&self, msg: &str, loc: NodeLoc) -> crate::Error {
             Error {
                 msg: format!(
-                    "ERROR: {msg}\n\n{}: {}\n{}",
+                    // TODO account for width of line number
+                    "ERROR: {msg}\n\n{}: {}\n   {}",
                     self.src_line,
                     self.source,
                     loc.highlight()
                 ),
+            }
+        }
+
+        fn call(
+            &mut self,
+            fn_name: &str,
+            lhs: Option<Value>,
+            args: Vec<(Node<String>, Node<Expr>)>,
+            loc: NodeLoc,
+        ) -> Result<Value, Vec<Error>> {
+            match fn_name {
+                "fmt" => {
+                    let Some(lhs) = lhs else {
+                        return Err(vec![self.make_err(
+                            "`fmt` requires data as input, but called with no input",
+                            loc,
+                        )]);
+                    };
+                    let data = match lhs.kind {
+                        ValueKind::Data(d) => d,
+                        k => {
+                            return Err(vec![self.make_err(
+                                &format!("`fmt` expected data as input, found: `{k}`"),
+                                loc,
+                            )]);
+                        }
+                    };
+
+                    let mut opts = data::FmtOptions::default();
+                    let mut errors = Vec::new();
+                    for (name, expr) in args {
+                        match &*name.inner {
+                            "depth" => {
+                                let loc = expr.location;
+                                let val = expr.exec(self)?;
+                                match val.kind {
+                                    ValueKind::Number(n) => {
+                                        if n < 0 {
+                                            errors.push(self.make_err(
+                                                &format!(
+                                                    "depth argument to `fmt` must be a positive integer"
+                                                ),
+                                                loc,
+                                            ));
+                                            continue;
+                                        }
+                                        let n = n as usize;
+                                        opts.depth = Some(n);
+                                    }
+                                    _ => {
+                                        errors.push(self.make_err(
+                                            &format!("depth argument to `fmt` must be an integer"),
+                                            loc,
+                                        ));
+                                        continue;
+                                    }
+                                }
+                            }
+                            n => errors.push(self.make_err(
+                                &format!("unexpected argument to `fmt`: `{n}`"),
+                                name.location,
+                            )),
+                        }
+                    }
+
+                    if !errors.is_empty() {
+                        return Err(errors);
+                    }
+
+                    let mut buf = String::new();
+                    data.fmt(&mut buf, &opts).unwrap();
+                    Ok(Value {
+                        kind: ValueKind::String(buf),
+                    })
+                }
+                "ty" => {
+                    let Some(lhs) = lhs else {
+                        return Err(vec![
+                            self.make_err("`ty` requires input, but called with no input", loc),
+                        ]);
+                    };
+                    if !args.is_empty() {
+                        return Err(vec![self.make_err("`ty` expects no arguments", loc)]);
+                    }
+                    Ok(Value {
+                        kind: ValueKind::String(lhs.kind.to_string()),
+                    })
+                }
+                _ => {
+                    Err(vec![self.make_err(
+                        &format!("Unknown function name: `{fn_name}`"),
+                        loc,
+                    )])
+                }
             }
         }
     }
@@ -116,8 +216,11 @@ mod exec {
                     .map(|v| v.clone())
                     .ok_or(vec![ctxt.make_err(
                         &format!("Unknown variable: `${name}`"),
-                        &self.location,
+                        self.location,
                     )]),
+                Expr::HistVar(n) => ctxt.runtime.get_history(n).map(|v| v.clone()).ok_or(vec![
+                    ctxt.make_err(&format!("Invalid historic value: `^{n}`"), self.location),
+                ]),
                 Expr::Int(n) => Ok(Value {
                     kind: ValueKind::Number(n),
                 }),
@@ -129,8 +232,33 @@ mod exec {
                     Ok(Value {
                         kind: ValueKind::Data(data),
                     })
-                } // Expr::Action(..) => unimplemented!(),
-                  // Expr::Pipe(..) => unimplemented!(),
+                }
+                Expr::Pipe(lhs, actions) => {
+                    let mut result = match lhs {
+                        Some(expr) => expr.exec(ctxt)?,
+                        None => ctxt
+                            .runtime
+                            .get_history(1)
+                            .ok_or(vec![ctxt.make_err(
+                                "Pipe with no lhs and no previous statement",
+                                self.location,
+                            )])?
+                            .clone(),
+                    };
+
+                    for action in actions {
+                        result = match action.inner {
+                            Action::Call(name, args) => {
+                                ctxt.call(&name.inner, Some(result), args, action.location)?
+                            }
+                        }
+                    }
+
+                    Ok(result)
+                }
+                Expr::Action(action) => match action {
+                    Action::Call(name, args) => ctxt.call(&name.inner, None, args, self.location),
+                },
             }
         }
     }
@@ -178,7 +306,7 @@ mod parse {
         pub location: NodeLoc,
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub struct NodeLoc {
         pub char: usize,
         pub len: usize,
@@ -191,11 +319,22 @@ mod parse {
                 location: NodeLoc { char, len },
             }
         }
+
+        pub fn map<U>(self, f: impl Fn(T) -> U) -> Node<U> {
+            Node {
+                inner: f(self.inner),
+                location: self.location,
+            }
+        }
     }
 
     impl NodeLoc {
         pub fn highlight(&self) -> String {
             format!("{}{}", " ".repeat(self.char), "^".repeat(self.len))
+        }
+
+        fn end(&self) -> usize {
+            self.char + self.len
         }
     }
 
@@ -248,18 +387,19 @@ mod parse {
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub(super) enum Expr {
         Var(String),
+        HistVar(usize),
         Int(i64),
         String(String),
         Blob(String),
-        // Action(Option<Box<Node<Expr>>>, Node<Action>),
-        // Pipe(Option<Box<Node<Expr>>>, Node<Action>),
+        Action(Action),
+        Pipe(Option<Box<Node<Expr>>>, Vec<Node<Action>>),
     }
 
-    // #[derive(Clone, Debug, Eq, PartialEq)]
-    // pub(super) enum Action {
-    //     Projection(Node<Selector>),
-    //     Call(Node<String>, Vec<Node<Expr>>),
-    // }
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(super) enum Action {
+        // Projection(Node<Selector>),
+        Call(Node<String>, Vec<(Node<String>, Node<Expr>)>),
+    }
 
     // #[derive(Clone, Debug, Eq, PartialEq)]
     // pub(super) enum Selector {
@@ -316,7 +456,8 @@ mod parse {
         /// assign ::= var? `=` expr
         /// Precondition: `=` | _ `=`
         fn assign(&mut self) -> Result<CmdKind, Token> {
-            let var = match &self.peek(0).kind {
+            let t = self.peek(0);
+            let var = match &t.kind {
                 TokenKind::Var(_) => {
                     let tok = self.next();
                     match tok.kind {
@@ -335,16 +476,127 @@ mod parse {
             }
         }
 
-        /// expr ::= var | literal | expr project | (expr `.`)? call | `(` stmt `)`
+        /// expr ::= var | hist_var | literal | pipe | pexpr
         fn expr(&mut self) -> Result<Node<Expr>, Token> {
+            let t = self.peek(0);
+            match &t.kind {
+                TokenKind::Var(_) | TokenKind::Operator(Operator::Caret) => {
+                    let lhs = self.lexpr()?;
+                    if let TokenKind::Operator(Operator::RightArrow) = &self.peek(0).kind {
+                        return self.pipe(Some(lhs));
+                    } else {
+                        return Ok(lhs);
+                    }
+                }
+                TokenKind::Ident(_) => return self.pexpr().map(|a| a.map(|a| Expr::Action(a))),
+                TokenKind::Operator(Operator::RightArrow) => {
+                    return self.pipe(None);
+                }
+                _ => {}
+            }
             let t = self.next();
             match t.kind {
-                TokenKind::Var(s) => Ok(Node::new(Expr::Var(s), t.char, t.len)),
                 TokenKind::Number(n) => Ok(Node::new(Expr::Int(n), t.char, t.len)),
                 TokenKind::String(s) => Ok(Node::new(Expr::String(s), t.char, t.len)),
                 TokenKind::Blob(s) => Ok(Node::new(Expr::Blob(s), t.char, t.len)),
                 _ => {
                     self.restore_tok(t.clone());
+                    Err(t)
+                }
+            }
+        }
+
+        /// lexpr ::= var | hist_var
+        /// var ::= `$` ident
+        /// hist_var ::= `^`
+        fn lexpr(&mut self) -> Result<Node<Expr>, Token> {
+            let t = self.next();
+            match t.kind {
+                TokenKind::Var(s) => Ok(Node::new(Expr::Var(s), t.char, t.len)),
+                TokenKind::Operator(Operator::Caret) => {
+                    Ok(Node::new(Expr::HistVar(1), t.char, t.len))
+                }
+                _ => {
+                    self.restore_tok(t.clone());
+                    Err(t)
+                }
+            }
+        }
+
+        /// pipe ::= lexpr? (`>` pexpr)+
+        fn pipe(&mut self, lhs: Option<Node<Expr>>) -> Result<Node<Expr>, Token> {
+            let mut start = None;
+            if let Some(e) = &lhs {
+                start = Some(e.location.char);
+            }
+            let mut actions = Vec::new();
+            while let TokenKind::Operator(Operator::RightArrow) = &self.peek(0).kind {
+                let arrow = self.next();
+                if start.is_none() {
+                    start = Some(arrow.char);
+                }
+                actions.push(self.pexpr()?);
+            }
+            let end = actions.last().unwrap().location.end();
+            Ok(Node::new(
+                Expr::Pipe(lhs.map(|e| Box::new(e)), actions),
+                start.unwrap(),
+                end - start.unwrap(),
+            ))
+        }
+
+        /// pexpr ::= call
+        /// call ::= ident `(` (ident `=` expr),* `)`
+        fn pexpr(&mut self) -> Result<Node<Action>, Token> {
+            let ident = self.ident()?;
+            self.op(Operator::Bra)?;
+            let mut args = Vec::new();
+            loop {
+                if let TokenKind::Operator(Operator::Ket) = &self.peek(0).kind {
+                    break;
+                }
+                args.push(self.arg()?);
+                if &self.peek(0).kind == &TokenKind::Operator(Operator::Comma) {
+                    self.next();
+                } else {
+                    break;
+                }
+            }
+            let ket = self.op(Operator::Ket)?;
+
+            let start = ident.location.char;
+            let end = ket.location.char + 1;
+            Ok(Node::new(Action::Call(ident, args), start, end - start))
+        }
+
+        /// arg ::= ident `=` expr
+        fn arg(&mut self) -> Result<(Node<String>, Node<Expr>), Token> {
+            let ident = self.ident()?;
+            self.op(Operator::Equals)?;
+            let expr = self.expr()?;
+            Ok((ident, expr))
+        }
+
+        fn ident(&mut self) -> Result<Node<String>, Token> {
+            let t = self.next();
+            match t.kind {
+                TokenKind::Ident(s) => Ok(Node::new(s.clone(), t.char, t.len)),
+                _ => {
+                    self.restore_tok(t.clone());
+                    Err(t)
+                }
+            }
+        }
+
+        fn op(&mut self, expected: Operator) -> Result<Node<Operator>, Token> {
+            let t = self.next();
+            match t.kind {
+                TokenKind::Operator(op) if op == expected => {
+                    Ok(Node::new(op.clone(), t.char, t.len))
+                }
+                _ => {
+                    self.restore_tok(t.clone());
+                    eprintln!("expected {expected:?}, found {:?}", t.kind);
                     Err(t)
                 }
             }
@@ -394,6 +646,31 @@ mod parse {
         fn parse_echo() {
             let echoed = assert_echo("$foo");
             assert_eq!(echoed, Expr::Var(s("foo")));
+
+            let echoed = assert_echo("^");
+            assert_eq!(echoed, Expr::HistVar(1));
+            let echoed = assert_echo("42");
+            assert_eq!(echoed, Expr::Int(42));
+        }
+
+        #[test]
+        fn parse_pipe() {
+            let echoed = assert_echo("> foo()");
+            // TODO
+
+            let echoed = assert_echo("^ > foo()");
+
+            let echoed = assert_echo("$bar > foo()");
+
+            let echoed = assert_echo("$2 > foo() > bar()");
+        }
+
+        #[test]
+        fn parse_call() {
+            let echoed = assert_echo("foo()");
+            // TODO
+            let echoed = assert_echo("foo(x = $y, bar = qux())");
+            let echoed = assert_echo("foo(x = $y,)");
         }
     }
 }
@@ -563,7 +840,9 @@ mod lex {
         Dot,
         Bra,
         Ket,
-        Arrow,
+        LeftArrow,
+        RightArrow,
+        Caret,
     }
 
     impl TryFrom<char> for Operator {
@@ -576,13 +855,15 @@ mod lex {
                 ',' => Ok(Operator::Comma),
                 '(' => Ok(Operator::Bra),
                 ')' => Ok(Operator::Ket),
-                '>' => Ok(Operator::Arrow),
+                '<' => Ok(Operator::LeftArrow),
+                '>' => Ok(Operator::RightArrow),
+                '^' => Ok(Operator::Caret),
                 _ => Err(()),
             }
         }
     }
 
-    const OPS: [char; 6] = ['=', '.', ',', '(', ')', '>'];
+    const OPS: [char; 8] = ['=', '.', ',', '(', ')', '<', '>', '^'];
 
     #[derive(Copy, Clone, Debug)]
     enum LexState {

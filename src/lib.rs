@@ -10,7 +10,7 @@ use lang::ExecResult;
 #[derive(Debug)]
 pub struct Runtime {
     variables: HashMap<String, Value>,
-    history: Vec<ExecResult>,
+    history: Vec<(String, ExecResult)>,
     out: Box<dyn Report>,
 }
 
@@ -38,7 +38,7 @@ impl Runtime {
                 }
             }
 
-            self.history.push(result);
+            self.history.push((src.to_owned(), result));
         }
     }
 
@@ -52,6 +52,18 @@ impl Runtime {
 
     fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)
+    }
+
+    fn get_history(&self, offset: usize) -> Option<&Value> {
+        if offset > self.history.len() {
+            return None;
+        }
+        match &self.history[self.history.len() - offset].1 {
+            ExecResult::Echo(v) => Some(v),
+            ExecResult::Variable(v) => self.get_variable(v),
+            // TODO very reachable if result of historic expr was an error
+            _ => unreachable!(),
+        }
     }
 
     fn save_variable(&mut self, name: Option<String>, value: Value) -> String {
@@ -77,10 +89,21 @@ pub enum ValueKind {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ValueKind::Data(data) => data.fmt(f),
+            ValueKind::Data(data) => fmt::Display::fmt(data, f),
             ValueKind::String(s) => s.fmt(f),
             ValueKind::Number(n) => n.fmt(f),
             ValueKind::Error => write!(f, "ERROR"),
+        }
+    }
+}
+
+impl fmt::Display for ValueKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueKind::Data(d) => write!(f, "data({})", d.ty()),
+            ValueKind::String(_) => write!(f, "string"),
+            ValueKind::Number(_) => write!(f, "number"),
+            ValueKind::Error => write!(f, "error"),
         }
     }
 }
