@@ -508,19 +508,49 @@ mod parse {
 
         /// lexpr ::= var | hist_var
         /// var ::= `$` ident
-        /// hist_var ::= `^`
         fn lexpr(&mut self) -> Result<Node<Expr>, Token> {
             let t = self.next();
             match t.kind {
                 TokenKind::Var(s) => Ok(Node::new(Expr::Var(s), t.char, t.len)),
-                TokenKind::Operator(Operator::Caret) => {
-                    Ok(Node::new(Expr::HistVar(1), t.char, t.len))
-                }
+                TokenKind::Operator(Operator::Caret) => self.hist_var(t),
                 _ => {
                     self.restore_tok(t.clone());
                     Err(t)
                 }
             }
+        }
+
+        /// hist_var ::= `^`+ | `^` int
+        ///
+        /// Precondition: `t` is `^`
+        fn hist_var(&mut self, t: Token) -> Result<Node<Expr>, Token> {
+            let mut offset = 1;
+            let mut end = t.char + 1;
+            while let TokenKind::Operator(Operator::Caret) = self.peek(0).kind {
+                let t = self.next();
+                end = t.char + 1;
+                offset += 1;
+            }
+            if offset > 1 {
+                return Ok(Node::new(Expr::HistVar(offset), t.char, end - t.char));
+            }
+
+            if let TokenKind::Number(_) = self.peek(0).kind {
+                let num = self.next();
+                match num.kind {
+                    TokenKind::Number(i) => {
+                        if i <= 0 {
+                            // TODO not unexpected error
+                            return Err(num);
+                        }
+                        end = num.char + num.len;
+                        return Ok(Node::new(Expr::HistVar(i as usize), t.char, end - t.char));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            Ok(Node::new(Expr::HistVar(1), t.char, t.len))
         }
 
         /// pipe ::= lexpr? (`>` pexpr)+
@@ -659,6 +689,8 @@ mod parse {
             // TODO
 
             let echoed = assert_echo("^ > foo()");
+            let echoed = assert_echo("^^^^ > foo()");
+            let echoed = assert_echo("^72 > foo()");
 
             let echoed = assert_echo("$bar > foo()");
 

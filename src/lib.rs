@@ -36,9 +36,9 @@ impl Runtime {
                 for err in errs {
                     self.out.report_err(err);
                 }
+            } else {
+                self.history.push((src.to_owned(), result));
             }
-
-            self.history.push((src.to_owned(), result));
         }
     }
 
@@ -61,7 +61,6 @@ impl Runtime {
         match &self.history[self.history.len() - offset].1 {
             ExecResult::Echo(v) => Some(v),
             ExecResult::Variable(v) => self.get_variable(v),
-            // TODO very reachable if result of historic expr was an error
             _ => unreachable!(),
         }
     }
