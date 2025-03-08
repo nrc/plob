@@ -1,0 +1,174 @@
+use crate::{
+    Error, Value, ValueKind, data,
+    lang::parse::{Action, Expr, Node, NodeLoc},
+};
+
+pub struct Context<'a> {
+    pub runtime: &'a crate::Runtime,
+    pub source: String,
+    pub src_line: usize,
+}
+
+impl Context<'_> {
+    fn make_err(&self, msg: &str, loc: NodeLoc) -> crate::Error {
+        Error {
+            msg: format!(
+                // TODO account for width of line number
+                "ERROR: {msg}\n\n{}: {}\n   {}",
+                self.src_line,
+                self.source,
+                loc.highlight()
+            ),
+        }
+    }
+
+    fn call(
+        &mut self,
+        fn_name: &str,
+        lhs: Option<Value>,
+        args: Vec<(Node<String>, Node<Expr>)>,
+        loc: NodeLoc,
+    ) -> Result<Value, Vec<Error>> {
+        match fn_name {
+            "fmt" => {
+                let Some(lhs) = lhs else {
+                    return Err(vec![self.make_err(
+                        "`fmt` requires data as input, but called with no input",
+                        loc,
+                    )]);
+                };
+                let data = match lhs.kind {
+                    ValueKind::Data(d) => d,
+                    k => {
+                        return Err(vec![self.make_err(
+                            &format!("`fmt` expected data as input, found: `{k}`"),
+                            loc,
+                        )]);
+                    }
+                };
+
+                let mut opts = data::FmtOptions::default();
+                let mut errors = Vec::new();
+                for (name, expr) in args {
+                    match &*name.inner {
+                        "depth" => {
+                            let loc = expr.location;
+                            let val = expr.exec(self)?;
+                            match val.kind {
+                                ValueKind::Number(n) => {
+                                    if n < 0 {
+                                        errors.push(self.make_err(
+                                            &format!(
+                                                "depth argument to `fmt` must be a positive integer"
+                                            ),
+                                            loc,
+                                        ));
+                                        continue;
+                                    }
+                                    let n = n as usize;
+                                    opts.depth = Some(n);
+                                }
+                                _ => {
+                                    errors.push(self.make_err(
+                                        &format!("depth argument to `fmt` must be an integer"),
+                                        loc,
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        n => errors.push(self.make_err(
+                            &format!("unexpected argument to `fmt`: `{n}`"),
+                            name.location,
+                        )),
+                    }
+                }
+
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
+
+                let mut buf = String::new();
+                data.fmt(&mut buf, &opts).unwrap();
+                Ok(Value {
+                    kind: ValueKind::String(buf),
+                })
+            }
+            "ty" => {
+                let Some(lhs) = lhs else {
+                    return Err(vec![
+                        self.make_err("`ty` requires input, but called with no input", loc),
+                    ]);
+                };
+                if !args.is_empty() {
+                    return Err(vec![self.make_err("`ty` expects no arguments", loc)]);
+                }
+                Ok(Value {
+                    kind: ValueKind::String(lhs.kind.to_string()),
+                })
+            }
+            _ => {
+                Err(vec![self.make_err(
+                    &format!("Unknown function name: `{fn_name}`"),
+                    loc,
+                )])
+            }
+        }
+    }
+}
+
+impl Node<Expr> {
+    pub fn exec(self, ctxt: &mut Context) -> Result<Value, Vec<Error>> {
+        match self.inner {
+            Expr::Var(name) => ctxt
+                .runtime
+                .get_variable(&name)
+                .map(|v| v.clone())
+                .ok_or(vec![ctxt.make_err(
+                    &format!("Unknown variable: `${name}`"),
+                    self.location,
+                )]),
+            Expr::HistVar(n) => ctxt.runtime.get_history(n).map(|v| v.clone()).ok_or(vec![
+                ctxt.make_err(&format!("Invalid historic value: `^{n}`"), self.location),
+            ]),
+            Expr::Int(n) => Ok(Value {
+                kind: ValueKind::Number(n),
+            }),
+            Expr::String(s) => Ok(Value {
+                kind: ValueKind::String(s),
+            }),
+            Expr::Blob(b) => {
+                let data = data::parse(&b)?;
+                Ok(Value {
+                    kind: ValueKind::Data(data),
+                })
+            }
+            Expr::Pipe(lhs, actions) => {
+                let mut result = match lhs {
+                    Some(expr) => expr.exec(ctxt)?,
+                    None => ctxt
+                        .runtime
+                        .get_history(1)
+                        .ok_or(vec![ctxt.make_err(
+                            "Pipe with no lhs and no previous statement",
+                            self.location,
+                        )])?
+                        .clone(),
+                };
+
+                for action in actions {
+                    result = match action.inner {
+                        Action::Call(name, args) => {
+                            ctxt.call(&name.inner, Some(result), args, action.location)?
+                        }
+                    }
+                }
+
+                Ok(result)
+            }
+            Expr::Action(action) => match action {
+                Action::Call(name, args) => ctxt.call(&name.inner, None, args, self.location),
+            },
+        }
+    }
+}
