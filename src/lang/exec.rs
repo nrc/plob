@@ -1,5 +1,5 @@
 use crate::{
-    Error, Value, ValueKind, data,
+    Data, Error, Value, ValueKind, data,
     lang::parse::{Action, Expr, Node, NodeLoc},
 };
 
@@ -37,14 +37,11 @@ impl Context<'_> {
                         loc,
                     )]);
                 };
-                let data = match lhs.kind {
-                    ValueKind::Data(d) => d,
-                    k => {
-                        return Err(vec![self.make_err(
-                            &format!("`fmt` expected data as input, found: `{k}`"),
-                            loc,
-                        )]);
-                    }
+                let ValueKind::Data(data) = lhs.kind else {
+                    return Err(vec![self.make_err(
+                        &format!("`fmt` expected data as input, found: `{}`", lhs.kind),
+                        loc,
+                    )]);
                 };
 
                 let mut opts = data::FmtOptions::default();
@@ -107,6 +104,34 @@ impl Context<'_> {
                     kind: ValueKind::String(lhs.kind.to_string()),
                 })
             }
+            "count" => {
+                let Some(lhs) = lhs else {
+                    return Err(vec![self.make_err(
+                        "`count` requires data as input, but called with no input",
+                        loc,
+                    )]);
+                };
+                let ValueKind::Data(data) = lhs.kind else {
+                    return Err(vec![self.make_err(
+                        &format!("`count` expected data as input, found: `{}`", lhs.kind),
+                        loc,
+                    )]);
+                };
+
+                crate::data::reparse::require_reparsed(&data, Some(1), &self.runtime);
+                match data {
+                    Data::Struct(_, r) => {
+                        let reparsed = &self.runtime.metadata.borrow()[&r].reparsed;
+                        Ok(Value {
+                            kind: ValueKind::Number(reparsed.count() as i64),
+                        })
+                    }
+                    Data::Unknown => {
+                        return Err(vec![self.make_err("unknown data input", loc)]);
+                    }
+                    _ => unimplemented!(),
+                }
+            }
             _ => {
                 Err(vec![self.make_err(
                     &format!("Unknown function name: `{fn_name}`"),
@@ -138,7 +163,7 @@ impl Node<Expr> {
                 kind: ValueKind::String(s),
             }),
             Expr::Blob(b) => {
-                let data = data::parse(&b)?;
+                let data = data::parse(&b, &ctxt.runtime)?;
                 Ok(Value {
                     kind: ValueKind::Data(data),
                 })

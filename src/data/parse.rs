@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use crate::data::{
-    FmtOptions,
+    self, FmtOptions,
     lex::{Token, TokenKind},
 };
 
@@ -73,7 +73,7 @@ impl Parser {
     // Parse a sequence up to and including a closing delimter
     fn delimited(&mut self, delimiter: char, result: &mut Vec<Node>) {
         while let Some(node) = self.structural() {
-            if matches!(&node.kind, NodeKind::Tok(Token { kind: TokenKind::Symbol(close), ..}) if delimiters_match(delimiter, *close))
+            if matches!(&node.kind, NodeKind::Tok(Token { kind: TokenKind::Symbol(close), ..}) if data::delimiters_match(delimiter, *close))
             {
                 result.push(node);
                 return;
@@ -83,20 +83,13 @@ impl Parser {
     }
 }
 
-fn delimiters_match(open: char, close: char) -> bool {
-    match (open, close) {
-        ('{', '}') | ('[', ']') | ('(', ')') | ('<', '>') => true,
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Node {
-    kind: NodeKind,
+    pub(super) kind: NodeKind,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-enum NodeKind {
+pub(super) enum NodeKind {
     Tok(Token),
     Trivia(Token),
     Seq(Vec<Node>),
@@ -246,7 +239,7 @@ impl NodeKind {
                     result.push('\n');
                     result.push_str(&FMT_TAB.repeat(indent));
                     available = FMT_MAX_WIDTH - indent * FMT_TAB_WIDTH;
-                } else if indent > 0 && CLOSE_DELIMS.contains(&next) {
+                } else if indent > 0 && data::CLOSE_DELIMS.contains(&next) {
                     result.push('\n');
                     result.push_str(&FMT_TAB.repeat(indent - 1));
                     available = FMT_MAX_WIDTH - (indent - 1) * FMT_TAB_WIDTH;
@@ -273,16 +266,14 @@ impl NodeKind {
 }
 
 fn is_close_delimiter(c: char) -> bool {
-    CLOSE_DELIMS.contains(&c)
+    data::CLOSE_DELIMS.contains(&c)
 }
 
 fn is_open_delimiter(c: char) -> bool {
-    OPEN_DELIMS.contains(&c)
+    data::OPEN_DELIMS.contains(&c)
 }
 
 const NEWLINE_CHARS: [char; 8] = ['{', '(', '[', '}', ')', ']', ',', ';'];
-const OPEN_DELIMS: [char; 3] = ['{', '(', '['];
-const CLOSE_DELIMS: [char; 3] = ['}', ')', ']'];
 
 enum CharSpacing {
     WhiteSpace,
@@ -346,7 +337,7 @@ Command {
   ),
   line: 0,
 }"#;
-        let parsed = crate::data::parse(text).unwrap();
+        let parsed = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
         let node = parsed.unwrap_structural();
         let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
         assert_eq!(
@@ -378,8 +369,8 @@ kind: Echo(
 ),
 line: 0,
 }"#;
-        let result = crate::data::parse(text).unwrap();
-        assert!(matches!(result, crate::data::Data::Struct(_)));
+        let result = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
         eprintln!("{result}");
+        result.unwrap_structural();
     }
 }

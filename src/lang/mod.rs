@@ -14,20 +14,31 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
     (cmds, errs.into_iter().flatten().collect())
 }
 
-// TODO `<<`
+// TODO tasks/requirements
+//
+// errors
+// read from file `read('foo.txt')`
+// reapply, e.g., `$a > fmt()`; `^(depth=2)`
+// project
+// map `lexpr >> pexpr` e.g., `$0 >> .kind`
+// flatten?
+// concat
+// search/select
+
 /// # Grammar
 ///
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
-/// expr ::= var | hist_var | literal | expr project | pipe | repipe | call
+/// expr ::= var | hist_var | literal | expr project | pipe | repipe | call | reapply
 /// pipe ::= lexpr? (`>` pexpr)+
 /// lexpr ::= var | hist_var | `(` expr `)`
 /// pexpr ::= project | call | `where` pexpr
-/// repipe ::= var? (`<` rexpr)+  // replay
+/// repipe ::= var? (`<` `<`? rexpr)+  // replay
 /// rexpr ::= hist_var,+ | pexpr
 /// project ::= `.` selector
 /// selector ::= int | ident | var | string | `(` selector,* `)`
 /// call ::= ident `(` (ident = expr),* `)`
+/// reapply ::= (var | hist_var) `(` (ident = expr),* `)`
 /// var ::= `$` ident
 /// hist_var ::= `^`+ | `^` int
 /// literal ::= int | string | blob

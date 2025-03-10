@@ -2,7 +2,7 @@ pub mod data;
 pub mod lang;
 pub mod tui;
 
-use std::{any::Any, collections::HashMap, fmt};
+use std::{any::Any, cell::RefCell, collections::HashMap, fmt};
 
 use data::Data;
 use lang::ExecResult;
@@ -12,6 +12,8 @@ pub struct Runtime {
     variables: HashMap<String, Value>,
     history: Vec<(String, ExecResult)>,
     out: Box<dyn Report>,
+
+    metadata: RefCell<HashMap<usize, MetaData>>,
 }
 
 impl Runtime {
@@ -20,7 +22,13 @@ impl Runtime {
             variables: HashMap::new(),
             history: Vec::new(),
             out,
+            metadata: RefCell::new(HashMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn new_test() -> Self {
+        Self::new(Box::new(BlackHole))
     }
 
     fn exec_cmd(&mut self, src: &str, line: usize) {
@@ -70,6 +78,12 @@ impl Runtime {
         self.variables.insert(name.clone(), value);
         name
     }
+
+    fn init_meta_data(&self) -> usize {
+        let id = self.metadata.borrow().len();
+        self.metadata.borrow_mut().insert(id, MetaData::default());
+        id
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +121,21 @@ impl fmt::Display for ValueKind {
     }
 }
 
+#[derive(Clone, Debug)]
+struct MetaData {
+    reparsed: data::reparse::Node,
+    reparse_depth: Option<usize>,
+}
+
+impl Default for MetaData {
+    fn default() -> Self {
+        MetaData {
+            reparsed: data::reparse::Node::Todo,
+            reparse_depth: Some(0),
+        }
+    }
+}
+
 // TODO structured error
 #[derive(Clone, Debug)]
 pub struct Error {
@@ -116,6 +145,16 @@ pub struct Error {
 trait Report: Any + fmt::Debug {
     fn echo(&self, s: &str);
     fn report_err(&self, err: &Error);
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct BlackHole;
+
+#[cfg(test)]
+impl Report for BlackHole {
+    fn echo(&self, _: &str) {}
+    fn report_err(&self, _: &Error) {}
 }
 
 #[cfg(test)]
