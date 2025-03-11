@@ -1,3 +1,5 @@
+use std::{fs::File, io::read_to_string};
+
 use crate::{
     Data, Error, Value, ValueKind, data,
     lang::parse::{Action, Expr, Node, NodeLoc},
@@ -131,6 +133,68 @@ impl Context<'_> {
                     }
                     _ => unimplemented!(),
                 }
+            }
+            "read" => {
+                if lhs.is_some() {
+                    return Err(vec![self.make_err(
+                        "`read` takes no input so should not appear in a pipeline",
+                        loc,
+                    )]);
+                }
+
+                let mut path = None;
+                let mut errors = Vec::new();
+                for (name, expr) in args {
+                    match &*name.inner {
+                        "path" => {
+                            let loc = expr.location;
+                            let val = expr.exec(self)?;
+                            match val.kind {
+                                ValueKind::String(s) => {
+                                    path = Some(s);
+                                }
+                                _ => {
+                                    errors.push(self.make_err(
+                                        &format!("`path` argument to `read` must be a string"),
+                                        loc,
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        n => errors.push(self.make_err(
+                            &format!("unexpected argument to `read`: `{n}`"),
+                            name.location,
+                        )),
+                    }
+                }
+
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
+
+                let Some(path) = path else {
+                    return Err(vec![
+                        self.make_err("`read` requires a `path` argument but none found", loc),
+                    ]);
+                };
+
+                let Ok(file) = File::open(&path) else {
+                    return Err(vec![
+                        self.make_err(&format!("could not open file: {path}"), loc),
+                    ]);
+                };
+
+                let Ok(content) = read_to_string(file) else {
+                    return Err(vec![
+                        self.make_err(&format!("could not read file: {path}"), loc),
+                    ]);
+                };
+
+                let data = data::parse(&content, &self.runtime)?;
+                Ok(Value {
+                    kind: ValueKind::Data(data),
+                })
             }
             _ => {
                 Err(vec![self.make_err(

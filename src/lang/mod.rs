@@ -17,7 +17,6 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 // TODO tasks/requirements
 //
 // errors
-// read from file `read('foo.txt')`
 // reapply, e.g., `$a > fmt()`; `^(depth=2)`
 // project
 // map `lexpr >> pexpr` e.g., `$0 >> .kind`
