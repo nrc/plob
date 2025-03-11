@@ -30,7 +30,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
 /// expr ::= var | hist_var | literal | expr project | pipe | repipe | call | reapply
-/// pipe ::= lexpr? (`>` pexpr)+
+/// pipe ::= lexpr? (`>` `>`? pexpr)+
 /// lexpr ::= var | hist_var | `(` expr `)`
 /// pexpr ::= project | call | `where` pexpr
 /// repipe ::= var? (`<` `<`? rexpr)+  // replay

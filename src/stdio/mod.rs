@@ -27,21 +27,21 @@ pub fn start() {
         }
     });
 
-    let mut tui = Tui::new(rx);
-    tui.main_loop();
+    let mut handler = StdioHandler::new(rx);
+    handler.main_loop();
 }
 
 #[derive(Debug)]
-struct Tui {
+struct StdioHandler {
     recv: Receiver<String>,
     source: Vec<String>,
     runtime: crate::Runtime,
 }
 
 #[derive(Debug)]
-struct TuiReporter {}
+struct StdoutReporter {}
 
-impl crate::Report for TuiReporter {
+impl crate::Report for StdoutReporter {
     fn echo(&self, s: &str) {
         println!("{s}");
     }
@@ -51,11 +51,11 @@ impl crate::Report for TuiReporter {
     }
 }
 
-impl Tui {
+impl StdioHandler {
     fn new(recv: Receiver<String>) -> Self {
-        Tui {
+        StdioHandler {
             recv,
-            runtime: crate::Runtime::new(Box::new(TuiReporter {})),
+            runtime: crate::Runtime::new(Box::new(StdoutReporter {})),
             source: Vec::new(),
         }
     }

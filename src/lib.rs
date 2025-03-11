@@ -1,6 +1,6 @@
 pub mod data;
 pub mod lang;
-pub mod tui;
+pub mod stdio;
 
 use std::{any::Any, cell::RefCell, collections::HashMap, fmt};
 
