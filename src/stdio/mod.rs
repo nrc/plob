@@ -46,8 +46,8 @@ impl crate::Report for StdoutReporter {
         println!("{s}");
     }
 
-    fn report_err(&self, err: &crate::Error) {
-        println!("Error: {}", err.msg);
+    fn report_err(&self, err: &crate::Error, src_line: &str) {
+        println!("Error: {}", err.render(src_line));
     }
 }
 

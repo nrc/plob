@@ -62,10 +62,6 @@ impl<T> Node<T> {
 }
 
 impl NodeLoc {
-    pub fn highlight(&self) -> String {
-        format!("{}{}", " ".repeat(self.char), "^".repeat(self.len))
-    }
-
     fn end(&self) -> usize {
         self.char + self.len
     }

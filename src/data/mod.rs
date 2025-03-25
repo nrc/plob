@@ -16,7 +16,11 @@ fn delimiters_match(open: char, close: char) -> bool {
     }
 }
 
-pub fn parse(text: &str, runtime: &crate::Runtime) -> Result<Data, Vec<crate::Error>> {
+pub fn parse(
+    text: &str,
+    _line: usize,
+    runtime: &crate::Runtime,
+) -> Result<Data, Vec<crate::Error>> {
     let tokens = lex::Lexer::new(text.char_indices());
     let eof = lex::Token {
         kind: lex::TokenKind::Eof,
@@ -32,12 +36,7 @@ pub fn parse(text: &str, runtime: &crate::Runtime) -> Result<Data, Vec<crate::Er
             Ok(Data::Unknown)
         }
     } else {
-        // TODO properly process errors
-        Err(parser
-            .errors
-            .into_iter()
-            .map(|(_, msg)| crate::Error { msg })
-            .collect())
+        Err(parser.errors)
     }
 }
 

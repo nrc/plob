@@ -35,14 +35,14 @@ impl Runtime {
         let (cmd, errs) = lang::parse_cmd(src, line);
 
         for e in errs {
-            self.out.report_err(&e);
+            self.out.report_err(&e, src);
         }
 
         if !cmd.is_error() {
             let result = lang::run_cmd(cmd, self);
             if let ExecResult::Error(errs) = &result {
                 for err in errs {
-                    self.out.report_err(err);
+                    self.out.report_err(err, src);
                 }
             } else {
                 self.history.push((src.to_owned(), result));
@@ -136,15 +136,39 @@ impl Default for MetaData {
     }
 }
 
-// TODO structured error
 #[derive(Clone, Debug)]
 pub struct Error {
     pub msg: String,
+    pub line: usize,
+    pub char: usize,
+    pub len: usize,
+}
+
+impl Error {
+    fn render(&self, src_line: &str) -> String {
+        use std::fmt::Write;
+
+        let mut result = self.msg.clone();
+        result.push('\n');
+        write!(result, "{}   > ", self.line).unwrap();
+        result.push_str(&src_line);
+        result.push('\n');
+        // TODO account for width of line number
+        write!(
+            result,
+            "      {}{}\n",
+            " ".repeat(self.char),
+            "^".repeat(self.len)
+        )
+        .unwrap();
+
+        result
+    }
 }
 
 trait Report: Any + fmt::Debug {
     fn echo(&self, s: &str);
-    fn report_err(&self, err: &Error);
+    fn report_err(&self, err: &Error, src_line: &str);
 }
 
 #[cfg(test)]
@@ -154,7 +178,7 @@ struct BlackHole;
 #[cfg(test)]
 impl Report for BlackHole {
     fn echo(&self, _: &str) {}
-    fn report_err(&self, _: &Error) {}
+    fn report_err(&self, _: &Error, _: &str) {}
 }
 
 #[cfg(test)]
@@ -216,7 +240,7 @@ mod test {
             eprintln!("skipped");
         }
 
-        fn report_err(&self, err: &Error) {
+        fn report_err(&self, err: &Error, _: &str) {
             eprint!("recevied {err:?} ");
             let mut expected_errs = self.expected_errs.borrow_mut();
 

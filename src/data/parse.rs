@@ -1,12 +1,17 @@
 use std::fmt::Write;
 
-use crate::data::{
-    self, FmtOptions,
-    lex::{Token, TokenKind},
+use crate::{
+    Error,
+    data::{
+        self, FmtOptions,
+        lex::{Token, TokenKind},
+    },
 };
 
 pub(super) struct Parser {
-    pub(super) errors: Vec<(Token, String)>,
+    pub(super) errors: Vec<Error>,
+    // TODO we don't currently produce any errors, but when we do we'll need to convert from erors
+    // on data to error in the lang.
     tokens: Vec<Token>,
     cur_tok: usize,
 }
@@ -337,7 +342,7 @@ Command {
   ),
   line: 0,
 }"#;
-        let parsed = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
+        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
         let node = parsed.unwrap_structural();
         let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
         assert_eq!(
@@ -369,7 +374,7 @@ kind: Echo(
 ),
 line: 0,
 }"#;
-        let result = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
+        let result = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
         eprintln!("{result}");
         result.unwrap_structural();
     }

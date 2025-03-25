@@ -16,7 +16,6 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 
 // TODO tasks/requirements
 //
-// errors
 // reapply, e.g., `$a > fmt()`; `^(depth=2)`
 // project
 // map `lexpr >> pexpr` e.g., `$0 >> .kind`
@@ -62,7 +61,10 @@ pub fn parse_cmd(text: &str, line: usize) -> (Command, Vec<crate::Error>) {
 
 fn make_err(msg: String, tok: Token, line: usize) -> crate::Error {
     crate::Error {
-        msg: format!("ERROR: {msg}\n\n{}, {}: {:?}", line, tok.char, tok.kind,),
+        msg,
+        line,
+        char: tok.char,
+        len: tok.len,
     }
 }
 
@@ -76,7 +78,6 @@ pub enum ExecResult {
 pub fn run_cmd(cmd: Command, runtime: &mut crate::Runtime) -> ExecResult {
     let mut ctxt = exec::Context {
         runtime,
-        source: cmd.source,
         src_line: cmd.line,
     };
     match cmd.kind {

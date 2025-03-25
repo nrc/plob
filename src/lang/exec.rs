@@ -7,20 +7,16 @@ use crate::{
 
 pub struct Context<'a> {
     pub runtime: &'a crate::Runtime,
-    pub source: String,
     pub src_line: usize,
 }
 
 impl Context<'_> {
     fn make_err(&self, msg: &str, loc: NodeLoc) -> crate::Error {
         Error {
-            msg: format!(
-                // TODO account for width of line number
-                "ERROR: {msg}\n\n{}: {}\n   {}",
-                self.src_line,
-                self.source,
-                loc.highlight()
-            ),
+            msg: msg.to_owned(),
+            line: self.src_line,
+            char: loc.char,
+            len: loc.len,
         }
     }
 
@@ -191,7 +187,7 @@ impl Context<'_> {
                     ]);
                 };
 
-                let data = data::parse(&content, &self.runtime)?;
+                let data = data::parse(&content, self.src_line, &self.runtime)?;
                 Ok(Value {
                     kind: ValueKind::Data(data),
                 })
@@ -227,7 +223,7 @@ impl Node<Expr> {
                 kind: ValueKind::String(s),
             }),
             Expr::Blob(b) => {
-                let data = data::parse(&b, &ctxt.runtime)?;
+                let data = data::parse(&b, ctxt.src_line, &ctxt.runtime)?;
                 Ok(Value {
                     kind: ValueKind::Data(data),
                 })

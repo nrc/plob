@@ -250,7 +250,7 @@ mod test {
             ),
             line: 0,
           }"#;
-        let parsed = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
+        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
         eprintln!("{parsed:?}\n\n");
         let p_node = parsed.unwrap_structural();
         let reparsed = reparse(&p_node, Hint::StructSeq, None);
@@ -342,7 +342,7 @@ mod test {
             ),
             line: 0,
           }"#;
-        let parsed = crate::data::parse(text, &crate::Runtime::new_test()).unwrap();
+        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
         eprintln!("{parsed:?}\n\n");
         let p_node = parsed.unwrap_structural();
         let reparsed = reparse(&p_node, Hint::StructSeq, Some(0));
