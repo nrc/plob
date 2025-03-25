@@ -5,6 +5,22 @@ use crate::{
     lang::parse::{Action, Expr, Node, NodeLoc},
 };
 
+const ALL_FNS_HELP: &str = r"  fmt: formats data
+  ty: returns the type of data
+  count: count elements of data
+  read: read a file into data";
+
+pub fn help_message_for(cmd: &str) -> String {
+    match cmd {
+        "all" | "list" => format!("Available functions:\n{}\n", ALL_FNS_HELP),
+        "fmt" => "`data > fmt(depth?: int >= 0) > string`  formats data".to_owned(),
+        "ty" => "`data > ty() > string`  returns the type of data".to_owned(),
+        "count" => "`data > count() > int`  count elements of data".to_owned(),
+        "read" => "`read(path: string) > data`  read a file into data".to_owned(),
+        _ => format!("Unknown function; available functions:\n{}\n", ALL_FNS_HELP),
+    }
+}
+
 pub struct Context<'a> {
     pub runtime: &'a crate::Runtime,
     pub src_line: usize,

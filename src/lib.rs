@@ -84,6 +84,22 @@ impl Runtime {
         self.metadata.borrow_mut().insert(id, MetaData::default());
         id
     }
+
+    fn help_message<'a>(&self, mut args: impl Iterator<Item = &'a str>) -> String {
+        if let Some(arg) = args.next() {
+            return lang::help_message_for(arg);
+        }
+        r#"
+plob
+
+# Commands
+
+q           quit
+h [fn]      display this help message
+              or dispaly help for a function `fn`; use `all` to list all avaialble functions
+"#
+        .to_owned()
+    }
 }
 
 #[derive(Debug, Clone)]

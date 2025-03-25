@@ -1,3 +1,4 @@
+pub use exec::help_message_for;
 pub use lex::Token;
 pub use parse::Command;
 
@@ -16,6 +17,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 
 // TODO tasks/requirements
 //
+// refactor function calls
 // reapply, e.g., `$a > fmt()`; `^(depth=2)`
 // project
 // map `lexpr >> pexpr` e.g., `$0 >> .kind`

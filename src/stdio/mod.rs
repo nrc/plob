@@ -14,6 +14,7 @@ pub fn start() {
     println!();
     println!("plob");
     println!("Use `h` for help, `q` to quit.");
+    println!();
 
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -101,7 +102,10 @@ impl StdioHandler {
             None => return Action::None,
             Some('q') => return Action::Quit,
             Some('h') => {
-                print_help();
+                println!(
+                    "{}",
+                    self.runtime.help_message(line[1..].split_whitespace())
+                );
                 return Action::None;
             }
             _ => {}
@@ -117,17 +121,4 @@ impl StdioHandler {
 enum Action {
     None,
     Quit,
-}
-
-fn print_help() {
-    println!(
-        r#"
-plob
-
-# Commands
-
-q           quit
-h           display this help message
-"#
-    );
 }
