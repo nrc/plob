@@ -1,23 +1,20 @@
-use std::{fs::File, io::read_to_string};
+use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 
 use crate::{
-    Data, Error, Value, ValueKind, data,
+    Data, Error, NumberKind, Value, ValueKind, ValueType, data,
     lang::parse::{Action, Expr, Node, NodeLoc},
 };
 
-const ALL_FNS_HELP: &str = r"  fmt: formats data
-  ty: returns the type of data
-  count: count elements of data
-  read: read a file into data";
-
 pub fn help_message_for(cmd: &str) -> String {
-    match cmd {
-        "all" | "list" => format!("Available functions:\n{}\n", ALL_FNS_HELP),
-        "fmt" => "`data > fmt(depth?: int >= 0) > string`  formats data".to_owned(),
-        "ty" => "`data > ty() > string`  returns the type of data".to_owned(),
-        "count" => "`data > count() > int`  count elements of data".to_owned(),
-        "read" => "`read(path: string) > data`  read a file into data".to_owned(),
-        _ => format!("Unknown function; available functions:\n{}\n", ALL_FNS_HELP),
+    match FUNCTIONS.get(cmd) {
+        Some(f) => format!("`{}`\n{}", f.signature, f.help_msg),
+        None => format!(
+            "Unknown function; available functions:\n{}",
+            FUNCTIONS
+                .values()
+                .map(|f| format!("{}: {}\n", f.name, f.help_msg))
+                .collect::<String>()
+        ),
     }
 }
 
@@ -27,9 +24,9 @@ pub struct Context<'a> {
 }
 
 impl Context<'_> {
-    fn make_err(&self, msg: &str, loc: NodeLoc) -> crate::Error {
+    fn make_err(&self, msg: impl Into<String>, loc: NodeLoc) -> crate::Error {
         Error {
-            msg: msg.to_owned(),
+            msg: msg.into(),
             line: self.src_line,
             char: loc.char,
             len: loc.len,
@@ -43,179 +40,264 @@ impl Context<'_> {
         args: Vec<(Node<String>, Node<Expr>)>,
         loc: NodeLoc,
     ) -> Result<Value, Vec<Error>> {
-        match fn_name {
-            "fmt" => {
-                let Some(lhs) = lhs else {
-                    return Err(vec![self.make_err(
-                        "`fmt` requires data as input, but called with no input",
-                        loc,
-                    )]);
-                };
-                let ValueKind::Data(data) = lhs.kind else {
-                    return Err(vec![self.make_err(
-                        &format!("`fmt` expected data as input, found: `{}`", lhs.kind),
-                        loc,
-                    )]);
-                };
+        // Function lookup.
+        let Some(f) = FUNCTIONS.get(fn_name) else {
+            return Err(vec![
+                self.make_err(&format!("Unknown function name: `{fn_name}`"), loc),
+            ]);
+        };
 
-                let mut opts = data::FmtOptions::default();
-                let mut errors = Vec::new();
-                for (name, expr) in args {
-                    match &*name.inner {
-                        "depth" => {
-                            let loc = expr.location;
-                            let val = expr.exec(self)?;
-                            match val.kind {
-                                ValueKind::Number(n) => {
-                                    if n < 0 {
-                                        errors.push(self.make_err(
-                                            &format!(
-                                                "depth argument to `fmt` must be a positive integer"
-                                            ),
-                                            loc,
-                                        ));
-                                        continue;
-                                    }
-                                    let n = n as usize;
-                                    opts.depth = Some(n);
-                                }
-                                _ => {
-                                    errors.push(self.make_err(
-                                        &format!("depth argument to `fmt` must be an integer"),
-                                        loc,
-                                    ));
-                                    continue;
-                                }
-                            }
-                        }
-                        n => errors.push(self.make_err(
-                            &format!("unexpected argument to `fmt`: `{n}`"),
-                            name.location,
-                        )),
-                    }
-                }
+        // Check input and args.
+        let input = f.type_check_input(lhs, loc, self)?;
+        let args = f.type_check_args(args, loc, self)?;
 
-                if !errors.is_empty() {
-                    return Err(errors);
-                }
+        // Call the function
+        (f.call)(input, args, loc, self)
+    }
+}
 
-                let mut buf = String::new();
-                data.fmt(&mut buf, &opts).unwrap();
-                Ok(Value {
-                    kind: ValueKind::String(buf),
-                })
-            }
-            "ty" => {
-                let Some(lhs) = lhs else {
-                    return Err(vec![
-                        self.make_err("`ty` requires input, but called with no input", loc),
-                    ]);
-                };
-                if !args.is_empty() {
-                    return Err(vec![self.make_err("`ty` expects no arguments", loc)]);
-                }
-                Ok(Value {
-                    kind: ValueKind::String(lhs.kind.to_string()),
-                })
-            }
-            "count" => {
-                let Some(lhs) = lhs else {
-                    return Err(vec![self.make_err(
-                        "`count` requires data as input, but called with no input",
-                        loc,
-                    )]);
-                };
-                let ValueKind::Data(data) = lhs.kind else {
-                    return Err(vec![self.make_err(
-                        &format!("`count` expected data as input, found: `{}`", lhs.kind),
-                        loc,
-                    )]);
-                };
+static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
+    [
+        Function::new(
+            "fmt",
+            Some(ValueType::Data),
+            vec![("depth", ValueType::Number(NumberKind::UInt), true)],
+            "data > fmt(depth?: int >= 0) > string",
+            "formats data",
+            &call_fmt,
+        ),
+        Function::new(
+            "ty",
+            Some(ValueType::Data),
+            vec![],
+            "data > ty() > string",
+            "returns the type of data",
+            &call_ty,
+        ),
+        Function::new(
+            "count",
+            Some(ValueType::Data),
+            vec![],
+            "data > count() > int",
+            "count elements of data",
+            &call_count,
+        ),
+        Function::new(
+            "read",
+            None,
+            vec![("path", ValueType::String, false)],
+            "read(path: string) > data",
+            "read a file into data",
+            &call_read,
+        ),
+    ]
+    .into_iter()
+    .map(|f| (f.name, f))
+    .collect()
+});
 
-                crate::data::reparse::require_reparsed(&data, Some(1), &self.runtime);
-                match data {
-                    Data::Struct(_, r) => {
-                        let reparsed = &self.runtime.metadata.borrow()[&r].reparsed;
-                        Ok(Value {
-                            kind: ValueKind::Number(reparsed.count() as i64),
-                        })
-                    }
-                    Data::Unknown => {
-                        return Err(vec![self.make_err("unknown data input", loc)]);
-                    }
-                    _ => unimplemented!(),
-                }
-            }
-            "read" => {
-                if lhs.is_some() {
-                    return Err(vec![self.make_err(
-                        "`read` takes no input so should not appear in a pipeline",
-                        loc,
-                    )]);
-                }
+trait FnCall = Fn(
+    Option<ValueKind>,
+    Vec<Option<ValueKind>>,
+    NodeLoc,
+    &mut Context,
+) -> Result<Value, Vec<Error>>;
 
-                let mut path = None;
-                let mut errors = Vec::new();
-                for (name, expr) in args {
-                    match &*name.inner {
-                        "path" => {
-                            let loc = expr.location;
-                            let val = expr.exec(self)?;
-                            match val.kind {
-                                ValueKind::String(s) => {
-                                    path = Some(s);
-                                }
-                                _ => {
-                                    errors.push(self.make_err(
-                                        &format!("`path` argument to `read` must be a string"),
-                                        loc,
-                                    ));
-                                    continue;
-                                }
-                            }
-                        }
-                        n => errors.push(self.make_err(
-                            &format!("unexpected argument to `read`: `{n}`"),
-                            name.location,
-                        )),
-                    }
-                }
+#[derive(Clone)]
+struct Function {
+    name: &'static str,
+    // TODO generate signature
+    signature: String,
+    help_msg: String,
+    input: Option<ValueType>,
+    // Name, type, optional.
+    args: Vec<(&'static str, ValueType, bool)>,
+    call: &'static dyn FnCall,
+}
 
-                if !errors.is_empty() {
-                    return Err(errors);
-                }
-
-                let Some(path) = path else {
-                    return Err(vec![
-                        self.make_err("`read` requires a `path` argument but none found", loc),
-                    ]);
-                };
-
-                let Ok(file) = File::open(&path) else {
-                    return Err(vec![
-                        self.make_err(&format!("could not open file: {path}"), loc),
-                    ]);
-                };
-
-                let Ok(content) = read_to_string(file) else {
-                    return Err(vec![
-                        self.make_err(&format!("could not read file: {path}"), loc),
-                    ]);
-                };
-
-                let data = data::parse(&content, self.src_line, &self.runtime)?;
-                Ok(Value {
-                    kind: ValueKind::Data(data),
-                })
-            }
-            _ => {
-                Err(vec![self.make_err(
-                    &format!("Unknown function name: `{fn_name}`"),
-                    loc,
-                )])
-            }
+impl Function {
+    fn new(
+        name: &'static str,
+        input: Option<ValueType>,
+        args: Vec<(&'static str, ValueType, bool)>,
+        signature: impl Into<String>,
+        help_msg: impl Into<String>,
+        call: &'static dyn FnCall,
+    ) -> Self {
+        Function {
+            name,
+            input,
+            args,
+            signature: signature.into(),
+            help_msg: help_msg.into(),
+            call,
         }
     }
+
+    fn type_check_input(
+        &self,
+        input: Option<Value>,
+        loc: NodeLoc,
+        ctxt: &mut Context,
+    ) -> Result<Option<ValueKind>, Vec<Error>> {
+        match (&self.input, input) {
+            (Some(ty), Some(input)) => match (ty, input.kind) {
+                (ValueType::Any, k) => Ok(Some(k)),
+                (ValueType::Data, k @ ValueKind::Data(_)) => Ok(Some(k)),
+                (ValueType::String, k @ ValueKind::String(_)) => Ok(Some(k)),
+                (ValueType::Number(NumberKind::Int), k @ ValueKind::Number(_)) => Ok(Some(k)),
+                (ValueType::Number(NumberKind::UInt), k @ ValueKind::Number(_)) => Ok(Some(k)),
+                (ty, k) => Err(vec![ctxt.make_err(
+                    &format!("`{}` expected {ty} as input, found: `{k}`", self.name),
+                    loc,
+                )]),
+            },
+            (None, None) => Ok(None),
+            (Some(_), None) => Err(vec![ctxt.make_err(
+                format!(
+                    "`{}` requires data as input, but called with no input",
+                    self.name
+                ),
+                loc,
+            )]),
+            (None, Some(_)) => Err(vec![ctxt.make_err(
+                format!(
+                    "`{}` takes no input so should not appear in a pipeline",
+                    self.name
+                ),
+                loc,
+            )]),
+        }
+    }
+
+    fn type_check_args(
+        &self,
+        args: Vec<(Node<String>, Node<Expr>)>,
+        loc: NodeLoc,
+        ctxt: &mut Context,
+    ) -> Result<Vec<Option<ValueKind>>, Vec<Error>> {
+        let mut args: Vec<_> = args.into_iter().map(|(n, e)| (n, Some(e))).collect();
+        let results: Vec<Result<Option<Value>, Vec<Error>>> = self.args.iter().map(|(n, ty, opt)| {
+            let Some(arg) = args.iter_mut().find(|(an, _)| &an.inner == n) else {
+                if *opt {
+                    return Ok(None);
+                } else {
+                    return Err(vec![ctxt.make_err(format!("`{}` requires a `{n}` argument but none found", self.name), loc)]);
+                }
+            };
+
+
+            let value = arg.1.take().unwrap().exec(ctxt)?;
+            value.coerce_to(ty).map_err(|orig| vec![ctxt.make_err(format!("`{}` expects an argument `{n}` with type `{ty}`, but found type `{}`", self.name, orig.ty()), loc)]).map(Some)
+        }).collect();
+
+        let (results, errors): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.is_ok());
+        let mut errors: Vec<_> = errors.into_iter().flat_map(Result::unwrap_err).collect();
+
+        // Check for extra args
+        for (l, e) in args {
+            if e.is_some() {
+                errors.push(ctxt.make_err(
+                    &format!("unexpected argument to `{}`: `{}`", self.name, l.inner),
+                    loc,
+                ));
+            }
+        }
+
+        // return errors
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        Ok(results
+            .into_iter()
+            .map(|v| v.unwrap().map(|v| v.kind))
+            .collect())
+    }
+}
+
+unsafe impl Send for Function {}
+unsafe impl Sync for Function {}
+
+fn call_fmt(
+    lhs: Option<ValueKind>,
+    mut args: Vec<Option<ValueKind>>,
+    _loc: NodeLoc,
+    _ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = lhs.unwrap().expect_data();
+    let depth = args.pop().unwrap();
+
+    let mut opts = data::FmtOptions::default();
+    if let Some(depth) = depth {
+        opts.depth = Some(depth.expect_uint() as usize);
+    }
+
+    let mut buf = String::new();
+    data.fmt(&mut buf, &opts).unwrap();
+    Ok(Value {
+        kind: ValueKind::String(buf),
+    })
+}
+
+fn call_ty(
+    lhs: Option<ValueKind>,
+    _args: Vec<Option<ValueKind>>,
+    _loc: NodeLoc,
+    _ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    Ok(Value {
+        kind: ValueKind::String(lhs.unwrap().to_string()),
+    })
+}
+
+fn call_count(
+    lhs: Option<ValueKind>,
+    _: Vec<Option<ValueKind>>,
+    loc: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = lhs.unwrap().expect_data();
+
+    crate::data::reparse::require_reparsed(&data, Some(1), &ctxt.runtime);
+    match data {
+        Data::Struct(_, r) => {
+            let reparsed = &ctxt.runtime.metadata.borrow()[&r].reparsed;
+            Ok(Value {
+                kind: ValueKind::Number(reparsed.count() as i64),
+            })
+        }
+        Data::Unknown => {
+            return Err(vec![ctxt.make_err("unknown data input", loc)]);
+        }
+        _ => unimplemented!(),
+    }
+}
+
+fn call_read(
+    _: Option<ValueKind>,
+    mut args: Vec<Option<ValueKind>>,
+    loc: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let path = args.pop().unwrap().unwrap().expect_str();
+
+    let Ok(file) = File::open(&path) else {
+        return Err(vec![
+            ctxt.make_err(&format!("could not open file: {path}"), loc),
+        ]);
+    };
+
+    let Ok(content) = read_to_string(file) else {
+        return Err(vec![
+            ctxt.make_err(&format!("could not read file: {path}"), loc),
+        ]);
+    };
+
+    let data = data::parse(&content, ctxt.src_line, &ctxt.runtime)?;
+    Ok(Value {
+        kind: ValueKind::Data(data),
+    })
 }
 
 impl Node<Expr> {

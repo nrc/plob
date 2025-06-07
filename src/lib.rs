@@ -1,3 +1,5 @@
+#![feature(trait_alias)]
+
 pub mod data;
 pub mod lang;
 pub mod stdio;
@@ -107,12 +109,88 @@ pub struct Value {
     kind: ValueKind,
 }
 
+impl Value {
+    fn coerce_to(self, ty: &ValueType) -> Result<Value, Value> {
+        use ValueKind::*;
+        match (self.kind, ty) {
+            (kind, ValueType::Any) => Ok(Value { kind }),
+
+            (kind @ Data(_), ValueType::Data) => Ok(Value { kind }),
+            (kind @ String(_), ValueType::String) => Ok(Value { kind }),
+            (kind @ Number(_), ValueType::Number(NumberKind::Int)) => Ok(Value { kind }),
+            (kind @ Number(n), ValueType::Number(NumberKind::UInt)) if n >= 0 => Ok(Value { kind }),
+
+            (kind, _) => Err(Value { kind }),
+        }
+    }
+
+    fn ty(&self) -> ValueType {
+        use ValueKind::*;
+        match &self.kind {
+            Data(_) => ValueType::Data,
+            String(_) => ValueType::String,
+            Number(n) if *n >= 0 => ValueType::Number(NumberKind::UInt),
+            Number(_) => ValueType::Number(NumberKind::Int),
+            Error => ValueType::Error,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ValueKind {
     Data(Data),
     String(String),
     Number(i64),
     Error,
+}
+
+impl ValueKind {
+    #[track_caller]
+    fn expect_data(self) -> Data {
+        match self {
+            ValueKind::Data(d) => d,
+            _ => unreachable!(),
+        }
+    }
+
+    #[track_caller]
+    fn expect_str(self) -> String {
+        match self {
+            ValueKind::String(s) => s,
+            _ => unreachable!(),
+        }
+    }
+
+    #[track_caller]
+    fn expect_int(self) -> i64 {
+        match self {
+            ValueKind::Number(n) => n,
+            _ => unreachable!(),
+        }
+    }
+
+    #[track_caller]
+    fn expect_uint(&self) -> u64 {
+        match self {
+            ValueKind::Number(n) if *n >= 0 => *n as u64,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ValueType {
+    Any,
+    Data,
+    String,
+    Number(NumberKind),
+    Error,
+}
+
+#[derive(Clone, Debug)]
+enum NumberKind {
+    Int,
+    UInt,
 }
 
 impl fmt::Display for Value {
@@ -133,6 +211,19 @@ impl fmt::Display for ValueKind {
             ValueKind::String(_) => write!(f, "string"),
             ValueKind::Number(_) => write!(f, "number"),
             ValueKind::Error => write!(f, "error"),
+        }
+    }
+}
+
+impl fmt::Display for ValueType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueType::Any => write!(f, "any type"),
+            ValueType::Data => write!(f, "data"),
+            ValueType::String => write!(f, "string"),
+            ValueType::Number(NumberKind::Int) => write!(f, "integer"),
+            ValueType::Number(NumberKind::UInt) => write!(f, "postiive integer"),
+            ValueType::Error => write!(f, "error"),
         }
     }
 }
