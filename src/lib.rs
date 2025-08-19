@@ -3,6 +3,7 @@
 pub mod data;
 pub mod lang;
 pub mod stdio;
+pub mod tui;
 
 use std::{any::Any, cell::RefCell, collections::HashMap, fmt};
 
@@ -35,6 +36,7 @@ impl Runtime {
 
     fn exec_cmd(&mut self, src: &str, line: usize) {
         let (cmd, errs) = lang::parse_cmd(src, line);
+        // TODO If cmd is an error command, then report it and return.
 
         for e in errs {
             self.out.report_err(&e, src);
@@ -98,7 +100,7 @@ plob
 
 q           quit
 h [fn]      display this help message
-              or dispaly help for a function `fn`; use `all` to list all avaialble functions
+              or display help for a function `fn`; use `all` to list all avaialble functions
 "#
         .to_owned()
     }
@@ -179,7 +181,7 @@ impl ValueKind {
 }
 
 #[derive(Clone, Debug)]
-pub enum ValueType {
+enum ValueType {
     Any,
     Data,
     String,

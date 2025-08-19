@@ -23,7 +23,7 @@ enum SplitterState {
 }
 
 impl ScriptSplitter<'_> {
-    pub fn new(chars: std::str::Chars) -> ScriptSplitter<'_> {
+    pub fn new(chars: std::str::Chars) -> ScriptSplitter {
         ScriptSplitter {
             chars,
             buf: String::new(),
@@ -209,7 +209,7 @@ pub(super) struct Lexer<'a> {
 }
 
 impl Lexer<'_> {
-    pub fn new(chars: std::str::Chars) -> Lexer<'_> {
+    pub fn new(chars: std::str::Chars) -> Lexer {
         Lexer {
             chars: chars.enumerate(),
             lookahead: None,

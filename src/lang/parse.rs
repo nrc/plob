@@ -353,7 +353,6 @@ impl CommandParser {
             TokenKind::Operator(op) if op == expected => Ok(Node::new(op.clone(), t.char, t.len)),
             _ => {
                 self.restore_tok(t.clone());
-                eprintln!("expected {expected:?}, found {:?}", t.kind);
                 Err(t)
             }
         }
