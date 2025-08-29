@@ -16,7 +16,6 @@ use crate::Report;
 
 pub fn start() {
     Tui::new().run();
-    ratatui::restore();
 }
 
 #[derive(Debug)]
@@ -25,6 +24,11 @@ struct Tui {
     buffer: String,
     cursor_position: usize,
     cur_line: String,
+    history_index: usize,
+    scroll_lines: u16,
+    viewport_size: u16,
+    doc_size: u16,
+    update_scroll_position: bool,
 
     source_lines: Vec<String>,
     pending_output: Rc<RefCell<String>>,
@@ -40,6 +44,12 @@ impl Tui {
             buffer: String::new(),
             cursor_position: 0,
             cur_line: String::new(),
+            history_index: 0,
+            scroll_lines: 0,
+            viewport_size: 0,
+            doc_size: 0,
+            update_scroll_position: false,
+
             source_lines: Vec::new(),
             runtime: crate::Runtime::new(Box::new(pending_output.clone())),
             pending_output,
@@ -63,6 +73,7 @@ impl Tui {
         impl Drop for TidyUp {
             fn drop(&mut self) {
                 crossterm::execute!(stdout(), PopKeyboardEnhancementFlags).unwrap();
+                ratatui::restore();
             }
         }
         let _tidy = TidyUp;
@@ -93,15 +104,12 @@ impl Tui {
         self.buffer.push_str(s);
     }
 
-    fn render(&self, frame: &mut ratatui::Frame) {
-        let area = frame.area();
-        let mut text = Text::from(&*self.buffer);
-
+    fn render_cur_line(text: &mut Text, cur_line: &str, cursor_position: usize) {
         let mut chars = 0;
         let mut rendered_cursor = false;
         let mut first = true;
 
-        for line in self.cur_line.lines() {
+        for line in cur_line.lines() {
             if !first {
                 chars += 1;
                 text.push_line("");
@@ -109,22 +117,24 @@ impl Tui {
                 first = false;
             }
 
-            if self.cursor_position < chars || self.cursor_position - chars > line.len() {
-                text.push_span(line);
-            } else if self.cursor_position == line.len() + chars {
-                text.push_span(line);
+            if cursor_position < chars || cursor_position - chars > line.len() {
+                text.push_span(line.to_owned());
+            } else if cursor_position == line.len() + chars {
+                text.push_span(line.to_owned());
                 text.push_span(Span::from(" ").style(Style::new().bg(Color::Gray)));
                 rendered_cursor = true;
             } else {
-                let cpos = self.cursor_position - chars;
-                text.push_span(&line[..cpos]);
-                text.push_span(Span::from(&line[cpos..=cpos]).style(Style::new().bg(Color::Gray)));
-                text.push_span(&line[cpos + 1..]);
+                let cpos = cursor_position - chars;
+                text.push_span(line[..cpos].to_owned());
+                text.push_span(
+                    Span::from(line[cpos..=cpos].to_owned()).style(Style::new().bg(Color::Gray)),
+                );
+                text.push_span(line[cpos + 1..].to_owned());
                 rendered_cursor = true;
             }
             chars += line.len();
         }
-        if self.cur_line.ends_with('\n') {
+        if cur_line.ends_with('\n') {
             text.push_line("");
         }
         if !rendered_cursor {
@@ -134,9 +144,56 @@ impl Tui {
             // space) produces a double newline rather than just one.
             text.push_span(Span::from(".").style(Style::new().bg(Color::Gray)));
         }
+    }
+
+    fn render(&mut self, frame: &mut ratatui::Frame) {
+        let area = frame.area();
+        let mut text = Text::from(&*self.buffer);
+
+        Self::render_cur_line(&mut text, self.current_line(), self.cursor_position);
 
         let para = Paragraph::new(text).wrap(Wrap { trim: false });
+
+        self.doc_size = para.line_count(area.width) as u16;
+        self.viewport_size = area.bottom();
+        if self.update_scroll_position {
+            self.update_scroll_position = false;
+            if self.doc_size >= self.scroll_lines + self.viewport_size {
+                self.scroll_lines = if self.viewport_size > self.doc_size {
+                    0
+                } else {
+                    self.doc_size - self.viewport_size
+                };
+            }
+        }
+
+        let para = para.scroll((self.scroll_lines, 0));
+
         frame.render_widget(para, area);
+    }
+
+    fn current_line(&self) -> &str {
+        if self.history_index == 0 {
+            &self.cur_line
+        } else {
+            &self.source_lines[self.source_lines.len() - self.history_index]
+        }
+    }
+
+    // Enter edit mode if we're in history-scrolling mode.
+    fn edit_current_line(&mut self) {
+        if self.history_index == 0 {
+            return;
+        }
+
+        self.cur_line = self.source_lines[self.source_lines.len() - self.history_index].clone();
+        self.history_index = 0;
+    }
+
+    fn total_line_count(&self) -> u16 {
+        let cur_line = self.current_line();
+        let fudge = if cur_line.is_empty() { 1 } else { 2 };
+        (self.buffer.lines().count() + cur_line.lines().count() - fudge) as u16
     }
 
     fn handle_crossterm_events(&mut self) -> Result<(), Box<dyn Error>> {
@@ -161,15 +218,25 @@ impl Tui {
             // Escape or Ctrl+C to clear the line and start again
             (_, KeyCode::Esc)
             | (KeyModifiers::CONTROL, KeyCode::Char('c') | KeyCode::Char('C')) => {
+                self.history_index = 0;
                 self.cur_line.clear();
                 self.cursor_position = 0;
+                self.scroll_lines = self.doc_size - 1;
+                self.update_scroll_position = true;
             }
             (KeyModifiers::SHIFT, KeyCode::Enter) => {
+                self.edit_current_line();
                 self.cur_line.insert(self.cursor_position, '\n');
                 self.cursor_position += 1;
+                self.update_scroll_position = true;
             }
-            (_, KeyCode::Enter) => self.on_enter(),
+            (_, KeyCode::Enter) => {
+                self.edit_current_line();
+                self.on_enter();
+                self.update_scroll_position = true;
+            }
             (_, KeyCode::Backspace) => {
+                self.edit_current_line();
                 if self.cursor_position > 0 {
                     if self.cursor_position >= self.cur_line.len() {
                         self.cur_line.pop();
@@ -179,25 +246,55 @@ impl Tui {
                     }
                     self.cursor_position -= 1;
                 }
+                self.update_scroll_position = true;
             }
             (_, KeyCode::Delete) => {
+                self.edit_current_line();
                 if self.cursor_position < self.cur_line.len() {
                     self.cur_line
                         .replace_range(self.cursor_position..=self.cursor_position, "");
                 }
+                self.update_scroll_position = true;
             }
             // Cursor keys
             (_, KeyCode::Left) if self.cursor_position > 0 => self.cursor_position -= 1,
             (_, KeyCode::Right) if self.cursor_position < self.cur_line.len() => {
                 self.cursor_position += 1
             }
-            // TODO up and down arrows
+            (KeyModifiers::SHIFT, KeyCode::Down) => {
+                if self.scroll_lines < self.doc_size - 1 {
+                    self.scroll_lines += 1;
+                }
+            }
+            (KeyModifiers::SHIFT, KeyCode::Up) => {
+                if self.scroll_lines > 0 {
+                    self.scroll_lines -= 1;
+                }
+            }
+            (_, KeyCode::Up) if self.history_index < self.source_lines.len() => {
+                self.history_index += 1;
+                self.cursor_position = self.current_line().len();
+                if self.scroll_lines > self.total_line_count() {
+                    self.scroll_lines = self.total_line_count();
+                }
+                self.update_scroll_position = true;
+            }
+            (_, KeyCode::Down) if self.history_index > 0 => {
+                self.history_index -= 1;
+                self.cursor_position = self.current_line().len();
+                if self.scroll_lines > self.total_line_count() {
+                    self.scroll_lines = self.total_line_count();
+                }
+                self.update_scroll_position = true;
+            }
             // TODO? undo, redo
 
             // Typing characters
             (_, KeyCode::Char(c)) => {
+                self.edit_current_line();
                 self.cur_line.insert(self.cursor_position, c);
                 self.cursor_position += 1;
+                self.update_scroll_position = true;
             }
             _ => {}
         }
