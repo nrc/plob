@@ -148,13 +148,24 @@ impl Tui {
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        let mut text = Text::from(&*self.buffer);
+        let mut text = Text::from("");
+
+        for line in self.buffer.lines() {
+            text.push_line(line);
+        }
+
+        // TODO with lots of text, we're getting scrolling artefacts, not sure if it's a bug
+        // here or in ratatui
+        // Try building lines explicitly? Do our own line-wrapping?
+        //     - seems to be line wrapping causing invalidation bug
+        // tui_textarea, syntect_tui, bat tool syntax highlighting, tui-tree-widget
 
         Self::render_cur_line(&mut text, self.current_line(), self.cursor_position);
 
         let para = Paragraph::new(text).wrap(Wrap { trim: false });
 
         self.doc_size = para.line_count(area.width) as u16;
+
         self.viewport_size = area.bottom();
         if self.update_scroll_position {
             self.update_scroll_position = false;
@@ -258,7 +269,7 @@ impl Tui {
             }
             // Cursor keys
             (_, KeyCode::Left) if self.cursor_position > 0 => self.cursor_position -= 1,
-            (_, KeyCode::Right) if self.cursor_position < self.cur_line.len() => {
+            (_, KeyCode::Right) if self.cursor_position < self.current_line().len() => {
                 self.cursor_position += 1
             }
             (KeyModifiers::SHIFT, KeyCode::Down) => {
@@ -290,7 +301,8 @@ impl Tui {
             // TODO? undo, redo
 
             // Typing characters
-            (_, KeyCode::Char(c)) => {
+            (modifier, KeyCode::Char(c)) => {
+                let c = apply_shift(c, modifier.intersects(KeyModifiers::SHIFT));
                 self.edit_current_line();
                 self.cur_line.insert(self.cursor_position, c);
                 self.cursor_position += 1;
@@ -343,6 +355,43 @@ impl Tui {
             self.source_lines.last().unwrap(),
             self.source_lines.len() - 1,
         );
+    }
+}
+
+// This is pretty sub-optimal (it is only correct for US keyboard layout and probably misses keys
+// from other keyboards, etc.). There must be a better way, but I couldn't find one.
+fn apply_shift(c: char, shift: bool) -> char {
+    if !shift {
+        return c;
+    }
+
+    if c.is_alphabetic() {
+        return c.to_ascii_uppercase();
+    }
+
+    match c {
+        '`' => '~',
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        ';' => ':',
+        '\'' => '"',
+        '[' => '{',
+        ']' => '}',
+        '\\' => '|',
+        _ => todo!(),
     }
 }
 
