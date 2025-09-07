@@ -165,6 +165,7 @@ pub(super) enum Operator {
     LeftArrow,
     RightArrow,
     Caret,
+    Hyphen,
 }
 
 impl TryFrom<char> for Operator {
@@ -286,6 +287,14 @@ impl Iterator for Lexer<'_> {
                 }
                 (c, LexState::Number) => {
                     self.lookahead = Some((i, c));
+                    if self.buf == "-" {
+                        self.buf.clear();
+                        return Some(Token {
+                            kind: TokenKind::Operator(Operator::Hyphen),
+                            char: self.cur_start,
+                            len: 1,
+                        });
+                    }
                     return self.token();
                 }
 

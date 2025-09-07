@@ -8,11 +8,13 @@ use crossterm::event::{
 };
 use ratatui::{
     style::{Color, Style},
-    text::{Span, Text},
-    widgets::{Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::Paragraph,
 };
 
 use crate::Report;
+
+const PROMPT: &str = "> ";
 
 pub fn start() {
     Tui::new().run();
@@ -26,7 +28,6 @@ struct Tui {
     cur_line: String,
     history_index: usize,
     scroll_lines: u16,
-    viewport_size: u16,
     doc_size: u16,
     update_scroll_position: bool,
 
@@ -46,7 +47,6 @@ impl Tui {
             cur_line: String::new(),
             history_index: 0,
             scroll_lines: 0,
-            viewport_size: 0,
             doc_size: 0,
             update_scroll_position: false,
 
@@ -81,7 +81,6 @@ impl Tui {
         self.running = true;
         self.buffer
             .push_str("plob\n\nUse `h` for help, `q` to quit.\n");
-        self.print_prompt();
 
         while self.running {
             if let Err(e) = terminal.draw(|frame| self.render(frame)) {
@@ -96,7 +95,8 @@ impl Tui {
     }
 
     fn print_prompt(&mut self) {
-        self.buffer.push_str("\n> ");
+        self.buffer.push('\n');
+        self.buffer.push_str(PROMPT);
     }
 
     fn print(&mut self, s: &str) {
@@ -104,83 +104,41 @@ impl Tui {
         self.buffer.push_str(s);
     }
 
-    fn render_cur_line(text: &mut Text, cur_line: &str, cursor_position: usize) {
-        let mut chars = 0;
-        let mut rendered_cursor = false;
-        let mut first = true;
-
-        for line in cur_line.lines() {
-            if !first {
-                chars += 1;
-                text.push_line("");
-            } else {
-                first = false;
-            }
-
-            if cursor_position < chars || cursor_position - chars > line.len() {
-                text.push_span(line.to_owned());
-            } else if cursor_position == line.len() + chars {
-                text.push_span(line.to_owned());
-                text.push_span(Span::from(" ").style(Style::new().bg(Color::Gray)));
-                rendered_cursor = true;
-            } else {
-                let cpos = cursor_position - chars;
-                text.push_span(line[..cpos].to_owned());
-                text.push_span(
-                    Span::from(line[cpos..=cpos].to_owned()).style(Style::new().bg(Color::Gray)),
-                );
-                text.push_span(line[cpos + 1..].to_owned());
-                rendered_cursor = true;
-            }
-            chars += line.len();
-        }
-        if cur_line.ends_with('\n') {
-            text.push_line("");
-        }
-        if !rendered_cursor {
-            // The dot should be invisible since it's the same colour as the background,
-            // but we need to use a dot rather than a space since there seems to be a bug
-            // where starting a newline with a space (or maybe only if the whole line is a
-            // space) produces a double newline rather than just one.
-            text.push_span(Span::from(".").style(Style::new().bg(Color::Gray)));
-        }
-    }
-
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        let mut text = Text::from("");
+        let mut renderer = TextRenderer::new(area.width);
 
         for line in self.buffer.lines() {
-            text.push_line(line);
+            renderer.push_line_to_text(&line, None);
+            renderer.finish_line();
+        }
+        if self.buffer.ends_with('\n') {
+            renderer.finish_line();
         }
 
-        // TODO with lots of text, we're getting scrolling artefacts, not sure if it's a bug
-        // here or in ratatui
-        // Try building lines explicitly? Do our own line-wrapping?
-        //     - seems to be line wrapping causing invalidation bug
-        // tui_textarea, syntect_tui, bat tool syntax highlighting, tui-tree-widget
+        renderer.render_cur_line(self.current_line(), self.cursor_position);
 
-        Self::render_cur_line(&mut text, self.current_line(), self.cursor_position);
+        // TODO scrolling - what if doc_size has changed?
+        let doc_size = renderer.line_count as u16;
+        let viewport_size = area.bottom();
+        let mut scroll_lines = self.scroll_lines;
 
-        let para = Paragraph::new(text).wrap(Wrap { trim: false });
-
-        self.doc_size = para.line_count(area.width) as u16;
-
-        self.viewport_size = area.bottom();
-        if self.update_scroll_position {
-            self.update_scroll_position = false;
-            if self.doc_size >= self.scroll_lines + self.viewport_size {
-                self.scroll_lines = if self.viewport_size > self.doc_size {
+        if self.update_scroll_position || doc_size != self.doc_size {
+            if doc_size >= self.scroll_lines + viewport_size {
+                scroll_lines = if viewport_size > doc_size {
                     0
                 } else {
-                    self.doc_size - self.viewport_size
+                    doc_size - viewport_size
                 };
             }
         }
 
-        let para = para.scroll((self.scroll_lines, 0));
-
+        let para = Paragraph::new(renderer.text).scroll((scroll_lines, 0));
         frame.render_widget(para, area);
+
+        self.doc_size = doc_size;
+        self.scroll_lines = scroll_lines;
+        self.update_scroll_position = false;
     }
 
     fn current_line(&self) -> &str {
@@ -214,7 +172,9 @@ impl Tui {
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key_event(key),
             Event::Paste(s) => {
-                self.cur_line.insert_str(self.cursor_position, &s);
+                // TODO handle windows line endings
+                self.cur_line
+                    .insert_str(self.cursor_position, &s.replace('\r', "\n"));
                 self.cursor_position += s.len();
             }
             Event::Mouse(_) => {}
@@ -313,10 +273,12 @@ impl Tui {
     }
 
     fn on_enter(&mut self) {
+        self.print_prompt();
+
         if self.cur_line.is_empty() {
-            self.print_prompt();
             return;
         }
+
         self.buffer.push_str(&self.cur_line);
         self.handle_line();
 
@@ -324,8 +286,6 @@ impl Tui {
         if !output.is_empty() {
             self.print(&output);
         }
-
-        self.print_prompt();
     }
 
     fn handle_line(&mut self) {
@@ -355,6 +315,103 @@ impl Tui {
             self.source_lines.last().unwrap(),
             self.source_lines.len() - 1,
         );
+    }
+}
+
+struct TextRenderer<'a> {
+    text: Text<'a>,
+    line: Line<'a>,
+    width: u16,
+    line_count: u16,
+}
+
+impl<'a> TextRenderer<'a> {
+    fn new(width: u16) -> Self {
+        Self {
+            text: Text::default(),
+            line: Line::default(),
+            width,
+            line_count: 0,
+        }
+    }
+
+    fn render_cur_line<'b: 'a>(&mut self, cur_line: &'b str, cursor_position: usize) {
+        let mut chars = 0;
+        let mut rendered_cursor = false;
+        let mut first = true;
+
+        self.line.push_span(PROMPT);
+        for line in cur_line.lines() {
+            // Account for the newline character.
+            if first {
+                first = false;
+            } else {
+                self.finish_line();
+                chars += 1;
+            }
+
+            if cursor_position < chars || cursor_position - chars > line.len() {
+                self.push_line_to_text(&line, None);
+            } else {
+                let cpos = cursor_position - chars;
+                self.push_line_to_text(&line, Some(cpos));
+                rendered_cursor = true;
+            }
+
+            chars += line.len();
+        }
+        if cur_line.ends_with('\n') {
+            self.finish_line();
+        }
+        if !rendered_cursor {
+            // The dot should be invisible since it's the same colour as the background,
+            // but we need to use a dot rather than a space since there seems to be a bug
+            // where starting a newline with a space (or maybe only if the whole line is a
+            // space) produces a double newline rather than just one.
+            self.line
+                .push_span(Span::from(".").style(Style::new().bg(Color::Gray)));
+        }
+        self.finish_line();
+    }
+
+    fn push_line_to_text<'b: 'a>(&mut self, line: &'b str, cursor: Option<usize>) {
+        match cursor {
+            Some(cpos) => {
+                self.push_line_to_line(&line[..cpos]);
+                if cpos < line.len() {
+                    self.line.push_span(
+                        Span::from(&line[cpos..=cpos]).style(Style::new().bg(Color::Gray)),
+                    );
+                    self.push_line_to_line(&line[cpos + 1..]);
+                } else {
+                    self.line
+                        .push_span(Span::from(".").style(Style::new().bg(Color::Gray)));
+                }
+            }
+            None => {
+                self.push_line_to_line(line);
+            }
+        }
+    }
+
+    fn finish_line(&mut self) {
+        self.text.push_line(std::mem::take(&mut self.line));
+        self.line_count += 1;
+    }
+
+    fn push_line_to_line<'b: 'a>(&mut self, mut line: &'b str) {
+        // line wrapping
+        loop {
+            let chunk_len = self.width as usize - self.line.width();
+            if line.len() <= chunk_len {
+                break;
+            }
+            self.line.push_span(&line[..chunk_len]);
+            self.finish_line();
+            line = &line[chunk_len..];
+        }
+
+        self.line.push_span(line);
     }
 }
 
