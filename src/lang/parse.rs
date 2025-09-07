@@ -127,7 +127,7 @@ pub(super) enum Expr {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Action {
     // Projection(Node<Selector>),
-    Call(Node<String>, Vec<(Node<String>, Node<Expr>)>),
+    Call(Node<String>, Vec<(Option<Node<String>>, Node<Expr>)>),
 }
 
 // #[derive(Clone, Debug, Eq, PartialEq)]
@@ -305,7 +305,7 @@ impl CommandParser {
     }
 
     /// pexpr ::= call
-    /// call ::= ident `(` (ident `=` expr),* `)`
+    /// call ::= ident `(` (arg),* `)`
     fn pexpr(&mut self) -> Result<Node<Action>, Token> {
         let ident = self.ident()?;
         self.op(Operator::Bra)?;
@@ -328,12 +328,17 @@ impl CommandParser {
         Ok(Node::new(Action::Call(ident, args), start, end - start))
     }
 
-    /// arg ::= ident `=` expr
-    fn arg(&mut self) -> Result<(Node<String>, Node<Expr>), Token> {
-        let ident = self.ident()?;
-        self.op(Operator::Equals)?;
+    /// arg ::= ident `=` expr | expr
+    fn arg(&mut self) -> Result<(Option<Node<String>>, Node<Expr>), Token> {
+        if let TokenKind::Ident(_) = self.peek(0).kind {
+            let ident = self.ident()?;
+            self.op(Operator::Equals)?;
+            let expr = self.expr()?;
+            return Ok((Some(ident), expr));
+        }
+
         let expr = self.expr()?;
-        Ok((ident, expr))
+        Ok((None, expr))
     }
 
     fn ident(&mut self) -> Result<Node<String>, Token> {

@@ -6,6 +6,13 @@ use crate::{
 };
 
 pub fn help_message_for(cmd: &str) -> String {
+    if cmd == "all" {
+        return FUNCTIONS
+            .values()
+            .map(|f| format!("{}: {}\n", f.name, f.help_msg))
+            .collect::<String>();
+    }
+
     match FUNCTIONS.get(cmd) {
         Some(f) => format!("`{}`\n{}", f.signature, f.help_msg),
         None => format!(
@@ -37,7 +44,7 @@ impl Context<'_> {
         &mut self,
         fn_name: &str,
         lhs: Option<Value>,
-        args: Vec<(Node<String>, Node<Expr>)>,
+        args: Vec<(Option<Node<String>>, Node<Expr>)>,
         loc: NodeLoc,
     ) -> Result<Value, Vec<Error>> {
         // Function lookup.
@@ -172,13 +179,17 @@ impl Function {
 
     fn type_check_args(
         &self,
-        args: Vec<(Node<String>, Node<Expr>)>,
+        args: Vec<(Option<Node<String>>, Node<Expr>)>,
         loc: NodeLoc,
         ctxt: &mut Context,
     ) -> Result<Vec<Option<ValueKind>>, Vec<Error>> {
         let mut args: Vec<_> = args.into_iter().map(|(n, e)| (n, Some(e))).collect();
-        let results: Vec<Result<Option<Value>, Vec<Error>>> = self.args.iter().map(|(n, ty, opt)| {
-            let Some(arg) = args.iter_mut().find(|(an, _)| &an.inner == n) else {
+        let results: Vec<Result<Option<Value>, Vec<Error>>> = self.args.iter().enumerate().map(|(i, (n, ty, opt))| {
+            let arg = if let Some(arg) = args.iter_mut().find(|(an, _)| matches!(an, Some(an) if &an.inner == n)) {
+                arg.1.take()
+            } else if args.len() > i && args[i].0 == None {
+                args[i].1.take()
+            } else {
                 if *opt {
                     return Ok(None);
                 } else {
@@ -186,8 +197,7 @@ impl Function {
                 }
             };
 
-
-            let value = arg.1.take().unwrap().exec(ctxt)?;
+            let value = arg.unwrap().exec(ctxt)?;
             value.coerce_to(ty).map_err(|orig| vec![ctxt.make_err(format!("`{}` expects an argument `{n}` with type `{ty}`, but found type `{}`", self.name, orig.ty()), loc)]).map(Some)
         }).collect();
 
@@ -195,12 +205,20 @@ impl Function {
         let mut errors: Vec<_> = errors.into_iter().flat_map(Result::unwrap_err).collect();
 
         // Check for extra args
-        for (l, e) in args {
+        for (i, (l, e)) in args.iter().enumerate() {
             if e.is_some() {
-                errors.push(ctxt.make_err(
-                    &format!("unexpected argument to `{}`: `{}`", self.name, l.inner),
-                    loc,
-                ));
+                errors.push(
+                    ctxt.make_err(
+                        &format!(
+                            "unexpected argument to `{}`: {}",
+                            self.name,
+                            l.as_ref()
+                                .map(|a| format!("`{}`", a.inner))
+                                .unwrap_or_else(|| format!("argument {i}"))
+                        ),
+                        loc,
+                    ),
+                );
             }
         }
 
