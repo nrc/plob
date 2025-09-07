@@ -92,7 +92,7 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
             let mut open_delim = None;
             let mut sep = None;
 
-            if let Some(c) = tok_symbol(nodes.first().unwrap()) {
+            if let Some(c) = tok_delimiter(nodes.first().unwrap()) {
                 if data::OPEN_DELIMS.contains(&c) {
                     open_delim = Some(c);
                     nodes = &nodes[1..];
@@ -134,8 +134,16 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
                 if n.is_trivial() {
                     continue;
                 }
-                if let Some(c) = tok_symbol(n) {
-                    if data::SEPERATORS.contains(&c) {
+                if let Some(c) = tok_delimiter(n) {
+                    if let Some(opener) = open_delim {
+                        if data::delimiters_match(opener, c) {
+                            break;
+                        }
+                    }
+                }
+                if let Some(s) = tok_symbol(n) {
+                    if data::SEPERATORS.contains(&s) {
+                        let c = s.chars().next().unwrap();
                         match sep {
                             Some(cc) => {
                                 if c == cc {
@@ -151,18 +159,17 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
                         }
                         continue;
                     }
-                    if let Some(opener) = open_delim {
-                        if data::delimiters_match(opener, c) {
-                            break;
-                        }
-                    }
-                    if data::PAIR_SEPERATORS.contains(&c) {
+                    if data::PAIR_SEPERATORS.contains(&s) {
                         let first = match buf.len() {
                             0 => Node::None,
                             1 => buf.pop().unwrap(),
                             _ => Node::Group(buf),
                         };
-                        pair = Some(Node::Pair(Box::new(first), Box::new(Node::None), c));
+                        pair = Some(Node::Pair(
+                            Box::new(first),
+                            Box::new(Node::None),
+                            s.chars().next().unwrap(),
+                        ));
                         buf = Vec::new();
                         continue;
                     }
@@ -199,12 +206,21 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
     }
 }
 
-fn tok_symbol(n: &PNode) -> Option<char> {
+fn tok_delimiter(n: &PNode) -> Option<char> {
     match &n.kind {
         NodeKind::Tok(Token {
-            kind: TokenKind::Symbol(c),
+            kind: TokenKind::Delimiter(c),
             ..
         }) => Some(*c),
+        _ => None,
+    }
+}
+fn tok_symbol(n: &PNode) -> Option<&str> {
+    match &n.kind {
+        NodeKind::Tok(Token {
+            kind: TokenKind::Symbol(s),
+            ..
+        }) => Some(s),
         _ => None,
     }
 }

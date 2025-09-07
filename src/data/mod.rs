@@ -6,8 +6,8 @@ pub mod reparse;
 
 const OPEN_DELIMS: [char; 3] = ['{', '(', '['];
 const CLOSE_DELIMS: [char; 3] = ['}', ')', ']'];
-const SEPERATORS: [char; 2] = [',', ';'];
-const PAIR_SEPERATORS: [char; 2] = ['=', ':'];
+const SEPERATORS: [&str; 2] = [",", ";"];
+const PAIR_SEPERATORS: [&str; 2] = ["=", ":"];
 
 fn delimiters_match(open: char, close: char) -> bool {
     match (open, close) {

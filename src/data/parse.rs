@@ -52,9 +52,9 @@ impl Parser {
 
     pub fn structural(&mut self) -> Option<Node> {
         Some(match &self.peek(0).kind {
-            TokenKind::Symbol(c @ '{')
-            | TokenKind::Symbol(c @ '(')
-            | TokenKind::Symbol(c @ '[') => {
+            TokenKind::Delimiter(c @ '{')
+            | TokenKind::Delimiter(c @ '(')
+            | TokenKind::Delimiter(c @ '[') => {
                 let c = *c;
                 let opener = Node {
                     kind: NodeKind::Tok(self.next()),
@@ -65,7 +65,10 @@ impl Parser {
                     kind: NodeKind::Seq(nodes),
                 }
             }
-            TokenKind::Word(_) | TokenKind::Symbol(_) | TokenKind::String(_) => Node {
+            TokenKind::Word(_)
+            | TokenKind::Symbol(_)
+            | TokenKind::String(_)
+            | TokenKind::Delimiter(_) => Node {
                 kind: NodeKind::Tok(self.next()),
             },
             TokenKind::Newline | TokenKind::Comment(_) => Node {
@@ -78,7 +81,7 @@ impl Parser {
     // Parse a sequence up to and including a closing delimter
     fn delimited(&mut self, delimiter: char, result: &mut Vec<Node>) {
         while let Some(node) = self.structural() {
-            if matches!(&node.kind, NodeKind::Tok(Token { kind: TokenKind::Symbol(close), ..}) if data::delimiters_match(delimiter, *close))
+            if matches!(&node.kind, NodeKind::Tok(Token { kind: TokenKind::Delimiter(close), ..}) if data::delimiters_match(delimiter, *close))
             {
                 result.push(node);
                 return;
@@ -116,8 +119,8 @@ impl Node {
     fn next_char(&self) -> char {
         match &self.kind {
             NodeKind::Tok(token) | NodeKind::Trivia(token) => match &token.kind {
-                TokenKind::Word(s) => s.chars().next().unwrap(),
-                TokenKind::Symbol(c) => *c,
+                TokenKind::Word(s) | TokenKind::Symbol(s) => s.chars().next().unwrap(),
+                TokenKind::Delimiter(c) => *c,
                 TokenKind::String(_) => '"',
                 TokenKind::Newline => '\n',
                 TokenKind::Comment(_) => '/',
@@ -136,11 +139,11 @@ impl NodeKind {
                 ..
             }) => format!("\"{}\"", s.replace('\n', "\\n")),
             NodeKind::Tok(Token {
-                kind: TokenKind::Symbol(c),
+                kind: TokenKind::Delimiter(c),
                 ..
             }) => c.to_string(),
             NodeKind::Tok(Token {
-                kind: TokenKind::Word(s),
+                kind: TokenKind::Word(s) | TokenKind::Symbol(s),
                 ..
             }) => s.clone(),
             NodeKind::Trivia(_) => unreachable!(),
@@ -286,6 +289,7 @@ enum CharSpacing {
     Loose,
 }
 
+// TODO look at the whole token rather than just the first char (esp for symbols, two blocks next to each other should be whitespaced)
 impl CharSpacing {
     fn from_for_left(c: char) -> Self {
         match c {

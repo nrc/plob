@@ -207,18 +207,16 @@ impl Function {
         // Check for extra args
         for (i, (l, e)) in args.iter().enumerate() {
             if e.is_some() {
-                errors.push(
-                    ctxt.make_err(
-                        &format!(
+                errors.push(ctxt.make_err(
+                    &format!(
                             "unexpected argument to `{}`: {}",
                             self.name,
                             l.as_ref()
                                 .map(|a| format!("`{}`", a.inner))
                                 .unwrap_or_else(|| format!("argument {i}"))
                         ),
-                        loc,
-                    ),
-                );
+                    loc,
+                ));
             }
         }
 

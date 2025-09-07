@@ -1,5 +1,7 @@
 use std::mem;
 
+const DELIMITERS: [char; 6] = ['(', '{', '[', ')', '}', ']'];
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Token {
     pub(super) kind: TokenKind,
@@ -10,7 +12,8 @@ pub struct Token {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum TokenKind {
     Word(String),
-    Symbol(char),
+    Delimiter(char),
+    Symbol(String),
     // Escaped and including quotes
     String(String),
     Newline,
@@ -25,6 +28,7 @@ enum LexState {
     Slash,
     Comment,
     Word,
+    Symbol,
     Str(char),
     EscapeStr(char),
 }
@@ -58,9 +62,10 @@ impl Lexer<'_> {
 
         let kind = match self.state {
             LexState::Word => TokenKind::Word(text),
+            LexState::Symbol => TokenKind::Symbol(text),
             LexState::Comment => TokenKind::Comment(text.len()),
             LexState::Str(_) | LexState::EscapeStr(_) => TokenKind::String(text),
-            LexState::Slash => TokenKind::Symbol('/'),
+            LexState::Slash => TokenKind::Symbol("/".to_owned()),
             LexState::Src => unreachable!(),
         };
 
@@ -93,7 +98,7 @@ impl Iterator for Lexer<'_> {
                     self.lookahead = Some((i, c));
                     self.state = LexState::Src;
                     return Some(Token {
-                        kind: TokenKind::Symbol('/'),
+                        kind: TokenKind::Symbol("/".to_owned()),
                         start: self.cur_start - 1,
                     });
                 }
@@ -160,12 +165,31 @@ impl Iterator for Lexer<'_> {
                 // Whitespace
                 (' ', LexState::Src) | ('\t', LexState::Src) => {}
 
-                // Symbols
-                (c, LexState::Src) if !c.is_alphanumeric() => {
+                (c, LexState::Src) if DELIMITERS.contains(&c) => {
                     return Some(Token {
-                        kind: TokenKind::Symbol(c),
+                        kind: TokenKind::Delimiter(c),
                         start: self.cur_start,
                     });
+                }
+
+                // Symbols
+                (c, LexState::Src) if !c.is_alphanumeric() => {
+                    self.buf.push(c);
+                    self.state = LexState::Symbol;
+                }
+                (c, LexState::Symbol)
+                    if !c.is_alphanumeric()
+                        && !c.is_whitespace()
+                        && c != '\''
+                        && c != '"'
+                        && c != '/'
+                        && !DELIMITERS.contains(&c) =>
+                {
+                    self.buf.push(c);
+                }
+                (_, LexState::Symbol) => {
+                    self.lookahead = Some((i, c));
+                    return self.token();
                 }
 
                 // To please the exhaustiveness checker.
@@ -208,13 +232,12 @@ mod test {
 
         // symbols
         assert_tokens(
-            "# ( , ; :",
+            "# ( , ;:",
             vec![
-                Symbol('#'),
-                Symbol('('),
-                Symbol(','),
-                Symbol(';'),
-                Symbol(':'),
+                Symbol("#".to_owned()),
+                Delimiter('('),
+                Symbol(",".to_owned()),
+                Symbol(";:".to_owned()),
             ],
         );
 
