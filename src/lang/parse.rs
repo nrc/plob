@@ -157,6 +157,10 @@ impl CommandParser {
 
     /// cmd ::= assign | expr
     pub fn command(&mut self) -> CmdKind {
+        if matches!(self.peek(0).kind, TokenKind::Eof) {
+            return CmdKind::Error(self.peek(0).clone());
+        }
+
         if matches!(self.peek(0).kind, TokenKind::Operator(Operator::Equals))
             || matches!(self.peek(1).kind, TokenKind::Operator(Operator::Equals))
         {
@@ -179,6 +183,7 @@ impl CommandParser {
     }
 
     fn peek(&self, lookahead: usize) -> &Token {
+        if 1 + lookahead > self.tokens.len() {}
         &self.tokens[self.tokens.len() - 1 - lookahead]
     }
 

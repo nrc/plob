@@ -1,5 +1,8 @@
-use std::fmt;
+use std::fmt as sfmt;
 
+pub use fmt::FmtOptions;
+
+mod fmt;
 mod lex;
 mod parse;
 pub mod reparse;
@@ -68,7 +71,7 @@ impl Data {
     }
 
     // TODO formatting should use reparsed AST where available.
-    pub fn fmt(&self, w: &mut impl fmt::Write, opts: &FmtOptions) -> fmt::Result {
+    pub fn fmt(&self, w: &mut impl sfmt::Write, opts: &FmtOptions) -> sfmt::Result {
         match self {
             Data::Struct(node, _) => node.fmt(w, opts),
             _ => write!(w, "Data"),
@@ -76,18 +79,13 @@ impl Data {
     }
 }
 
-impl fmt::Display for Data {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl sfmt::Display for Data {
+    fn fmt(&self, f: &mut sfmt::Formatter<'_>) -> sfmt::Result {
         match self {
             Data::Struct(node, _) => node.fmt(f, &FmtOptions::default()),
             _ => write!(f, "Data"),
         }
     }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct FmtOptions {
-    pub depth: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
