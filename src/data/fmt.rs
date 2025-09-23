@@ -1,12 +1,12 @@
 use std::fmt::Write;
 
 use crate::data::{
-    self,
+    self, CLOSE_DELIMS,
     lex::{Token, TokenKind},
     parse::{Node, NodeKind},
 };
 
-const FMT_MAX_WIDTH: usize = 80;
+const FMT_MAX_WIDTH: usize = 100;
 const FMT_TAB: &str = "  ";
 const FMT_TAB_WIDTH: usize = FMT_TAB.len();
 
@@ -41,7 +41,7 @@ impl NodeKind {
             NodeKind::Tok(Token {
                 kind: TokenKind::String(s),
                 ..
-            }) => format!("\"{}\"", s.replace('\n', "\\n")),
+            }) => format!("{}", s.replace('\n', "\\n").replace('\t', "\\t")),
             NodeKind::Tok(Token {
                 kind: TokenKind::Delimiter(c),
                 ..
@@ -74,32 +74,32 @@ impl NodeKind {
                     continue;
                 }
             }
+
             if n.is_trivial() {
                 continue;
             }
 
             let mut available = available.saturating_sub(result.len());
-            if let Some(prev) = result.chars().next_back()
-                && is_open_delimiter(prev)
-                && !is_close_delimiter(n.next_char())
-                && let Some(max_depth) = opts.depth
-            {
-                if depth > max_depth {
+
+            // If it is likely we'll exceed the available space, skip to multiline layout without even trying
+            // to make the node fit on one line.
+            if n.count() >= available / 2 {
+                return Self::render_seq_multiline(nodes, indent, available, depth, opts);
+            }
+
+            if let Some(prev) = result.chars().next_back() {
+                if is_open_delimiter(prev)
+                    && !is_close_delimiter(n.next_char())
+                    && let Some(max_depth) = opts.depth
+                    && depth > max_depth
+                {
                     hide = true;
                     continue;
                 }
 
-                use CharSpacing::*;
-                match (
-                    CharSpacing::from_for_left(prev),
-                    CharSpacing::from_for_right(n.next_char()),
-                ) {
-                    (_, WhiteSpace) | (WhiteSpace, _) | (Tight, _) | (_, Tight) => {}
-                    (Delim, Loose) | (Loose, Delim) => {}
-                    _ => {
-                        result.push(' ');
-                        available = available.saturating_sub(1);
-                    }
+                if CharSpacing::should_space(prev, n) {
+                    result.push(' ');
+                    available = available.saturating_sub(1);
                 }
             }
 
@@ -116,7 +116,7 @@ impl NodeKind {
     fn render_seq_multiline(
         nodes: &[Node],
         indent: usize,
-        available: usize,
+        mut available: usize,
         depth: usize,
         opts: &FmtOptions,
     ) -> String {
@@ -135,45 +135,42 @@ impl NodeKind {
                 continue;
             }
 
-            let mut available =
-                available.saturating_sub(result.len() - result.rfind('\n').unwrap_or(0));
-            if let Some(prev) = result.chars().next_back()
-                && is_open_delimiter(prev)
-                && !is_close_delimiter(n.next_char())
-            {
-                if let Some(max_depth) = opts.depth
+            if let Some(prev) = result.chars().next_back() {
+                let next = n.next_char();
+
+                if is_open_delimiter(prev)
+                    && !is_close_delimiter(next)
+                    && let Some(max_depth) = opts.depth
                     && depth > max_depth
                 {
                     hide = true;
                     continue;
                 }
 
-                let next = n.next_char();
-                if NEWLINE_CHARS.contains(&prev) && !NEWLINE_CHARS.contains(&next) {
-                    result.push('\n');
-                    result.push_str(&FMT_TAB.repeat(indent));
-                    available = FMT_MAX_WIDTH - indent * FMT_TAB_WIDTH;
-                } else if indent > 0 && data::CLOSE_DELIMS.contains(&next) {
+                if indent > 0
+                    && data::CLOSE_DELIMS.contains(&next)
+                    && !data::OPEN_DELIMS.contains(&prev)
+                {
                     result.push('\n');
                     result.push_str(&FMT_TAB.repeat(indent - 1));
-                    available = FMT_MAX_WIDTH - (indent - 1) * FMT_TAB_WIDTH;
-                } else {
-                    use CharSpacing::*;
-                    match (
-                        CharSpacing::from_for_left(prev),
-                        CharSpacing::from_for_right(next),
-                    ) {
-                        (_, WhiteSpace) | (WhiteSpace, _) | (Tight, _) | (_, Tight) => {}
-                        (Delim, Loose) | (Loose, Delim) => {}
-                        _ => {
-                            result.push(' ');
-                            available = available.saturating_sub(1);
-                        }
-                    }
+                    available = FMT_MAX_WIDTH.saturating_sub((indent - 1) * FMT_TAB_WIDTH);
+                } else if (data::OPEN_DELIMS.contains(&prev) && !NEWLINE_CHARS.contains(&next))
+                    || (NEWLINE_CHARS.contains(&prev) && !NEWLINE_CHARS.contains(&next))
+                    || (available == 0
+                        && CLOSE_DELIMS.contains(&prev)
+                        && !NEWLINE_CHARS.contains(&next))
+                {
+                    result.push('\n');
+                    result.push_str(&FMT_TAB.repeat(indent));
+                    available = FMT_MAX_WIDTH.saturating_sub(indent * FMT_TAB_WIDTH);
+                } else if CharSpacing::should_space(prev, n) {
+                    result.push(' ');
+                    available = available.saturating_sub(1);
                 }
             }
 
             let next = n.kind.render(indent + 1, available, depth + 1, opts);
+            available = available.saturating_sub(next.len());
             result.push_str(&next);
         }
         result
@@ -188,23 +185,45 @@ fn is_open_delimiter(c: char) -> bool {
     data::OPEN_DELIMS.contains(&c)
 }
 
-const NEWLINE_CHARS: [char; 8] = ['{', '(', '[', '}', ')', ']', ',', ';'];
+const NEWLINE_CHARS: [char; 2] = [',', ';'];
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum CharSpacing {
     WhiteSpace,
     Tight,
     Loose,
-    Delim,
+    OpenDelim,
+    CloseDelim,
 }
 
-// TODO look at the whole token rather than just the first char (esp for symbols, two blocks next to each other should be whitespaced)
 // TODO not reporting parsing errors? USe code for a blob, but it isn't assigned into a variable, probably a parse error?
 impl CharSpacing {
+    fn should_space(c: char, n: &Node) -> bool {
+        let prev = CharSpacing::from_for_left(c);
+        let next = CharSpacing::from_for_right(n);
+
+        if prev == CharSpacing::WhiteSpace
+            || next == CharSpacing::WhiteSpace
+            || prev == CharSpacing::Tight
+            || next == CharSpacing::Tight
+        {
+            return false;
+        }
+
+        !matches!(
+            (prev, next),
+            (CharSpacing::OpenDelim, CharSpacing::Loose)
+                | (CharSpacing::Loose, CharSpacing::CloseDelim)
+                | (CharSpacing::OpenDelim, CharSpacing::CloseDelim)
+        )
+    }
+
     fn from_for_left(c: char) -> Self {
         match c {
             '\'' | '"' => CharSpacing::Loose,
             ' ' | '\n' | '\t' => CharSpacing::WhiteSpace,
-            '(' | ')' | '<' | '[' | ']' => CharSpacing::Delim,
+            ')' | ']' => CharSpacing::CloseDelim,
+            '(' | '<' | '[' => CharSpacing::OpenDelim,
             '{' | '}' | '>' => CharSpacing::Loose,
             _ if c.is_alphabetic() => CharSpacing::Loose,
             _ if c.is_numeric() => CharSpacing::Loose,
@@ -213,16 +232,20 @@ impl CharSpacing {
         }
     }
 
-    fn from_for_right(c: char) -> Self {
-        match c {
-            '\'' | '"' => CharSpacing::Loose,
-            ' ' | '\n' | '\t' => CharSpacing::WhiteSpace,
-            '(' | ')' | '<' | '[' | ']' => CharSpacing::Delim,
-            '{' | '}' | '>' => CharSpacing::Loose,
-            _ if c.is_alphabetic() => CharSpacing::Loose,
-            _ if c.is_numeric() => CharSpacing::Loose,
-            '.' | ':' | ';' | ',' => CharSpacing::Tight,
-            _ => CharSpacing::Loose,
+    fn from_for_right(n: &Node) -> Self {
+        match &n.kind {
+            NodeKind::Tok(token) | NodeKind::Trivia(token) => match &token.kind {
+                TokenKind::Word(_) | TokenKind::String(_) | TokenKind::Comment(_) => {
+                    CharSpacing::Loose
+                }
+                TokenKind::Delimiter(')' | ']') => CharSpacing::CloseDelim,
+                TokenKind::Delimiter('(' | '<' | '[') => CharSpacing::OpenDelim,
+                TokenKind::Delimiter(_) => CharSpacing::Loose,
+                TokenKind::Newline | TokenKind::Eof => CharSpacing::WhiteSpace,
+                TokenKind::Symbol(s) if matches!(&**s, "." | ":" | ";" | ",") => CharSpacing::Tight,
+                _ => CharSpacing::Loose,
+            },
+            NodeKind::Seq(nodes) => CharSpacing::from_for_right(&nodes[0]),
         }
     }
 }
@@ -236,25 +259,38 @@ mod test {
     fn fmt_smoke() {
         let text = r#"Command {
   source: "$foo = $bar",
-  kind: Assign(
-    Some(
-      "foo",
-    ),
-    Var(
-      "bar",
-    ),
-  ),
+  kind: Assign (Some ("foo",), Var ("bar",),),
   line: 0,
 }
 Command {
   source: "$foo",
-  kind: Echo(
-    Var(
-      "foo\n",
-    ),
-  ),
+  kind: Echo (Var ("foo\n",),),
   line: 0,
 }"#;
+        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
+        let node = parsed.unwrap_structural();
+        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
+        assert_eq!(
+            formatted, text,
+            "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_code() {
+        let text = r#"fn from_for_left (c: char) -> Self {
+  match c {
+    '\'' | '"' => CharSpacing :: Loose,
+    ' ' | '\n' | '\t' => CharSpacing :: WhiteSpace,
+    '(' | ')' | '<' | '[' | ']' => CharSpacing :: Delim,
+    '{' | '}' | '>' => CharSpacing :: Loose,
+    _ if c.is_alphabetic () => CharSpacing :: Loose,
+    _ if c.is_numeric () => CharSpacing :: Loose,
+    '.' => CharSpacing :: Tight,
+    _ => CharSpacing :: Loose,
+  }
+}"#;
+
         let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
         let node = parsed.unwrap_structural();
         let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());

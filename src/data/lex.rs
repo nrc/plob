@@ -120,11 +120,11 @@ impl Iterator for Lexer<'_> {
                 }
 
                 // Words
-                (c, LexState::Src) if c.is_alphanumeric() => {
+                (c, LexState::Src) if c.is_alphanumeric() || c == '_' => {
                     self.buf.push(c);
                     self.state = LexState::Word;
                 }
-                (c, LexState::Word) if c.is_alphanumeric() => {
+                (c, LexState::Word) if c.is_alphanumeric() || c == '_' => {
                     self.buf.push(c);
                 }
                 ('.', LexState::Word) if self.buf.chars().all(|c| c.is_numeric()) => {
@@ -137,6 +137,7 @@ impl Iterator for Lexer<'_> {
 
                 // Strings
                 ('\'', LexState::Src) | ('"', LexState::Src) => {
+                    self.buf.push(c);
                     self.state = LexState::Str(c);
                 }
                 ('\\', LexState::Str(d)) => {
@@ -156,6 +157,7 @@ impl Iterator for Lexer<'_> {
                     self.state = LexState::Str(d);
                 }
                 (d1, LexState::Str(d2)) if d1 == d2 => {
+                    self.buf.push(c);
                     return self.token();
                 }
                 (_, LexState::Str(_)) => {
@@ -242,15 +244,15 @@ mod test {
         );
 
         // string
-        assert_tokens("'sdfsdfsdf'", vec![String(s("sdfsdfsdf"))]);
+        assert_tokens("'sdfsdfsdf'", vec![String(s("'sdfsdfsdf'"))]);
     }
 
     #[test]
     fn lex_escapes() {
-        assert_tokens("'hel\nlo'", vec![String(s("hel\nlo"))]);
-        assert_tokens(r#"'hel\nlo'"#, vec![String(s("hel\nlo"))]);
-        assert_tokens(r#"'hel\\lo'"#, vec![String(s("hel\\lo"))]);
-        assert_tokens(r#"'hel\xlo'"#, vec![String(s("hel\\xlo"))]);
+        assert_tokens("'hel\nlo'", vec![String(s("'hel\nlo'"))]);
+        assert_tokens(r#"'hel\nlo'"#, vec![String(s("'hel\nlo'"))]);
+        assert_tokens(r#"'hel\\lo'"#, vec![String(s("'hel\\lo'"))]);
+        assert_tokens(r#"'hel\xlo'"#, vec![String(s("'hel\\xlo'"))]);
     }
 
     #[test]

@@ -105,6 +105,14 @@ impl Node {
     pub(super) fn is_trivial(&self) -> bool {
         matches!(self.kind, NodeKind::Trivia(_))
     }
+
+    pub fn count(&self) -> usize {
+        match &self.kind {
+            NodeKind::Tok(_) => 1,
+            NodeKind::Trivia(_) => 0,
+            NodeKind::Seq(nodes) => nodes.iter().map(Node::count).sum(),
+        }
+    }
 }
 
 #[cfg(test)]
