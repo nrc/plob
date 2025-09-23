@@ -77,6 +77,7 @@ impl<T> Deref for Node<T> {
 
 #[derive(Clone, Debug)]
 pub struct Command {
+    #[allow(dead_code)]
     pub(super) source: String,
     pub(super) kind: CmdKind,
     pub(super) line: usize,
@@ -183,7 +184,6 @@ impl CommandParser {
     }
 
     fn peek(&self, lookahead: usize) -> &Token {
-        if 1 + lookahead > self.tokens.len() {}
         &self.tokens[self.tokens.len() - 1 - lookahead]
     }
 
@@ -222,7 +222,7 @@ impl CommandParser {
                     return Ok(lhs);
                 }
             }
-            TokenKind::Ident(_) => return self.pexpr().map(|a| a.map(|a| Expr::Action(a))),
+            TokenKind::Ident(_) => return self.pexpr().map(|a| a.map(Expr::Action)),
             TokenKind::Operator(Operator::RightArrow) => {
                 return self.pipe(None);
             }
@@ -303,7 +303,7 @@ impl CommandParser {
         }
         let end = actions.last().unwrap().location.end();
         Ok(Node::new(
-            Expr::Pipe(lhs.map(|e| Box::new(e)), actions),
+            Expr::Pipe(lhs.map(Box::new), actions),
             start.unwrap(),
             end - start.unwrap(),
         ))
@@ -320,7 +320,7 @@ impl CommandParser {
                 break;
             }
             args.push(self.arg()?);
-            if &self.peek(0).kind == &TokenKind::Operator(Operator::Comma) {
+            if self.peek(0).kind == TokenKind::Operator(Operator::Comma) {
                 self.next();
             } else {
                 break;
@@ -360,7 +360,7 @@ impl CommandParser {
     fn op(&mut self, expected: Operator) -> Result<Node<Operator>, Token> {
         let t = self.next();
         match t.kind {
-            TokenKind::Operator(op) if op == expected => Ok(Node::new(op.clone(), t.char, t.len)),
+            TokenKind::Operator(op) if op == expected => Ok(Node::new(op, t.char, t.len)),
             _ => {
                 self.restore_tok(t.clone());
                 Err(t)
@@ -421,23 +421,23 @@ mod test {
 
     #[test]
     fn parse_pipe() {
-        let echoed = assert_echo("> foo()");
+        let _echoed = assert_echo("> foo()");
         // TODO
 
-        let echoed = assert_echo("^ > foo()");
-        let echoed = assert_echo("^^^^ > foo()");
-        let echoed = assert_echo("^72 > foo()");
+        let _echoed = assert_echo("^ > foo()");
+        let _echoed = assert_echo("^^^^ > foo()");
+        let _echoed = assert_echo("^72 > foo()");
 
-        let echoed = assert_echo("$bar > foo()");
+        let _echoed = assert_echo("$bar > foo()");
 
-        let echoed = assert_echo("$2 > foo() > bar()");
+        let _echoed = assert_echo("$2 > foo() > bar()");
     }
 
     #[test]
     fn parse_call() {
-        let echoed = assert_echo("foo()");
+        let _echoed = assert_echo("foo()");
         // TODO
-        let echoed = assert_echo("foo(x = $y, bar = qux())");
-        let echoed = assert_echo("foo(x = $y,)");
+        let _echoed = assert_echo("foo(x = $y, bar = qux())");
+        let _echoed = assert_echo("foo(x = $y,)");
     }
 }

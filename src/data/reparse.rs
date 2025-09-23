@@ -26,8 +26,8 @@ impl Node {
             Node::Error(_) => 0,
             Node::None => 0,
             Node::List(nodes, _, _) => nodes.len(),
-            Node::Group(nodes) => 1,
-            Node::Pair(node, node1, _) => 2,
+            Node::Group(_) => 1,
+            Node::Pair(..) => 2,
             Node::Atom(_) => 1,
         }
     }
@@ -47,7 +47,7 @@ pub fn require_reparsed(data: &data::Data, depth: Option<usize>, runtime: &crate
         data::Data::Unknown | data::Data::Atom => {}
         data::Data::Struct(node, r) => {
             let mut metas = runtime.metadata.borrow_mut();
-            let metadata = metas.get_mut(&r).unwrap();
+            let metadata = metas.get_mut(r).unwrap();
             match (metadata.reparse_depth, depth) {
                 (None, _) => return,
                 (Some(md), Some(d)) if md >= d => return,
@@ -63,10 +63,10 @@ pub fn require_reparsed(data: &data::Data, depth: Option<usize>, runtime: &crate
 }
 
 pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
-    if let Some(depth) = depth {
-        if depth == 0 {
-            return Node::Todo;
-        }
+    if let Some(depth) = depth
+        && depth == 0
+    {
+        return Node::Todo;
     }
 
     match &input.kind {
@@ -92,12 +92,12 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
             let mut open_delim = None;
             let mut sep = None;
 
-            if let Some(c) = tok_delimiter(nodes.first().unwrap()) {
-                if data::OPEN_DELIMS.contains(&c) {
-                    open_delim = Some(c);
-                    nodes = &nodes[1..];
-                    skipped += 1;
-                }
+            if let Some(c) = tok_delimiter(nodes.first().unwrap())
+                && data::OPEN_DELIMS.contains(&c)
+            {
+                open_delim = Some(c);
+                nodes = &nodes[1..];
+                skipped += 1;
             }
 
             let mut children = Vec::new();
@@ -106,6 +106,7 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
 
             macro_rules! finish_child {
                 () => {
+                    #[allow(unused_assignments)]
                     if !buf.is_empty() {
                         match pair {
                             Some(Node::Pair(_, ref mut second, _)) => {
@@ -134,12 +135,11 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
                 if n.is_trivial() {
                     continue;
                 }
-                if let Some(c) = tok_delimiter(n) {
-                    if let Some(opener) = open_delim {
-                        if data::delimiters_match(opener, c) {
-                            break;
-                        }
-                    }
+                if let Some(c) = tok_delimiter(n)
+                    && let Some(opener) = open_delim
+                    && data::delimiters_match(opener, c)
+                {
+                    break;
                 }
                 if let Some(s) = tok_symbol(n) {
                     if data::SEPERATORS.contains(&s) {
@@ -176,8 +176,8 @@ pub fn reparse(input: &PNode, hint: Hint, depth: Option<usize>) -> Node {
                 }
 
                 match &n.kind {
-                    NodeKind::Tok(token) => buf.push(Node::Atom(i + skipped)),
-                    NodeKind::Seq(nodes) => {
+                    NodeKind::Tok(_) => buf.push(Node::Atom(i + skipped)),
+                    NodeKind::Seq(_) => {
                         let child = reparse(n, Hint::Seq, depth.map(|d| d - 1));
                         buf.push(child);
                         if hint == Hint::StructSeq {

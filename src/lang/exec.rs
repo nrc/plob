@@ -50,7 +50,7 @@ impl Context<'_> {
         // Function lookup.
         let Some(f) = FUNCTIONS.get(fn_name) else {
             return Err(vec![
-                self.make_err(&format!("Unknown function name: `{fn_name}`"), loc),
+                self.make_err(format!("Unknown function name: `{fn_name}`"), loc),
             ]);
         };
 
@@ -155,7 +155,7 @@ impl Function {
                 (ValueType::Number(NumberKind::Int), k @ ValueKind::Number(_)) => Ok(Some(k)),
                 (ValueType::Number(NumberKind::UInt), k @ ValueKind::Number(_)) => Ok(Some(k)),
                 (ty, k) => Err(vec![ctxt.make_err(
-                    &format!("`{}` expected {ty} as input, found: `{k}`", self.name),
+                    format!("`{}` expected {ty} as input, found: `{k}`", self.name),
                     loc,
                 )]),
             },
@@ -187,18 +187,19 @@ impl Function {
         let results: Vec<Result<Option<Value>, Vec<Error>>> = self.args.iter().enumerate().map(|(i, (n, ty, opt))| {
             let arg = if let Some(arg) = args.iter_mut().find(|(an, _)| matches!(an, Some(an) if &an.inner == n)) {
                 arg.1.take()
-            } else if args.len() > i && args[i].0 == None {
+            } else if args.len() > i && args[i].0.is_none() {
                 args[i].1.take()
+            } else if *opt {
+                return Ok(None);
             } else {
-                if *opt {
-                    return Ok(None);
-                } else {
-                    return Err(vec![ctxt.make_err(format!("`{}` requires a `{n}` argument but none found", self.name), loc)]);
-                }
+                return Err(vec![ctxt.make_err(format!("`{}` requires a `{n}` argument but none found", self.name), loc)]);
             };
 
             let value = arg.unwrap().exec(ctxt)?;
-            value.coerce_to(ty).map_err(|orig| vec![ctxt.make_err(format!("`{}` expects an argument `{n}` with type `{ty}`, but found type `{}`", self.name, orig.ty()), loc)]).map(Some)
+            value
+                .coerce_to(ty)
+                .map_err(|orig| vec![ctxt.make_err(format!("`{}` expects an argument `{n}` with type `{ty}`, but found type `{}`", self.name, orig.ty()), loc)])
+                .map(Some)
         }).collect();
 
         let (results, errors): (Vec<_>, Vec<_>) = results.into_iter().partition(|r| r.is_ok());
@@ -208,7 +209,7 @@ impl Function {
         for (i, (l, e)) in args.iter().enumerate() {
             if e.is_some() {
                 errors.push(ctxt.make_err(
-                    &format!(
+                    format!(
                             "unexpected argument to `{}`: {}",
                             self.name,
                             l.as_ref()
@@ -275,7 +276,7 @@ fn call_count(
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
 
-    crate::data::reparse::require_reparsed(&data, Some(1), &ctxt.runtime);
+    crate::data::reparse::require_reparsed(&data, Some(1), ctxt.runtime);
     match data {
         Data::Struct(_, r) => {
             let reparsed = &ctxt.runtime.metadata.borrow()[&r].reparsed;
@@ -283,9 +284,7 @@ fn call_count(
                 kind: ValueKind::Number(reparsed.count() as i64),
             })
         }
-        Data::Unknown => {
-            return Err(vec![ctxt.make_err("unknown data input", loc)]);
-        }
+        Data::Unknown => Err(vec![ctxt.make_err("unknown data input", loc)]),
         _ => unimplemented!(),
     }
 }
@@ -300,17 +299,17 @@ fn call_read(
 
     let Ok(file) = File::open(&path) else {
         return Err(vec![
-            ctxt.make_err(&format!("could not open file: {path}"), loc),
+            ctxt.make_err(format!("could not open file: {path}"), loc),
         ]);
     };
 
     let Ok(content) = read_to_string(file) else {
         return Err(vec![
-            ctxt.make_err(&format!("could not read file: {path}"), loc),
+            ctxt.make_err(format!("could not read file: {path}"), loc),
         ]);
     };
 
-    let data = data::parse(&content, ctxt.src_line, &ctxt.runtime)?;
+    let data = data::parse(&content, ctxt.src_line, ctxt.runtime)?;
     Ok(Value {
         kind: ValueKind::Data(data),
     })
@@ -319,16 +318,11 @@ fn call_read(
 impl Node<Expr> {
     pub fn exec(self, ctxt: &mut Context) -> Result<Value, Vec<Error>> {
         match self.inner {
-            Expr::Var(name) => ctxt
-                .runtime
-                .get_variable(&name)
-                .map(|v| v.clone())
-                .ok_or(vec![ctxt.make_err(
-                    &format!("Unknown variable: `${name}`"),
-                    self.location,
-                )]),
-            Expr::HistVar(n) => ctxt.runtime.get_history(n).map(|v| v.clone()).ok_or(vec![
-                ctxt.make_err(&format!("Invalid historic value: `^{n}`"), self.location),
+            Expr::Var(name) => ctxt.runtime.get_variable(&name).cloned().ok_or(vec![
+                ctxt.make_err(format!("Unknown variable: `${name}`"), self.location),
+            ]),
+            Expr::HistVar(n) => ctxt.runtime.get_history(n).cloned().ok_or(vec![
+                ctxt.make_err(format!("Invalid historic value: `^{n}`"), self.location),
             ]),
             Expr::Int(n) => Ok(Value {
                 kind: ValueKind::Number(n),
@@ -337,7 +331,7 @@ impl Node<Expr> {
                 kind: ValueKind::String(s),
             }),
             Expr::Blob(b) => {
-                let data = data::parse(&b, ctxt.src_line, &ctxt.runtime)?;
+                let data = data::parse(&b, ctxt.src_line, ctxt.runtime)?;
                 Ok(Value {
                     kind: ValueKind::Data(data),
                 })

@@ -44,7 +44,7 @@ pub(super) struct Lexer<'a> {
 impl Lexer<'_> {
     pub fn new(chars: std::str::CharIndices) -> Lexer {
         Lexer {
-            chars: chars,
+            chars,
             lookahead: None,
             buf: String::new(),
             cur_start: 0,

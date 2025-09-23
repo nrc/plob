@@ -163,13 +163,13 @@ impl ValueKind {
         }
     }
 
-    #[track_caller]
-    fn expect_int(self) -> i64 {
-        match self {
-            ValueKind::Number(n) => n,
-            _ => unreachable!(),
-        }
-    }
+    // #[track_caller]
+    // fn expect_int(self) -> i64 {
+    //     match self {
+    //         ValueKind::Number(n) => n,
+    //         _ => unreachable!(),
+    //     }
+    // }
 
     #[track_caller]
     fn expect_uint(&self) -> u64 {
@@ -182,6 +182,7 @@ impl ValueKind {
 
 #[derive(Clone, Debug)]
 enum ValueType {
+    #[allow(dead_code)]
     Any,
     Data,
     String,
@@ -260,12 +261,12 @@ impl Error {
         let mut result = self.msg.clone();
         result.push('\n');
         write!(result, "{}   > ", self.line).unwrap();
-        result.push_str(&src_line);
+        result.push_str(src_line);
         result.push('\n');
         // TODO account for width of line number
-        write!(
+        writeln!(
             result,
-            "      {}{}\n",
+            "      {}{}",
             " ".repeat(self.char),
             "^".repeat(self.len)
         )

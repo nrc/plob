@@ -109,7 +109,7 @@ impl Tui {
         let mut renderer = TextRenderer::new(area.width);
 
         for line in self.buffer.lines() {
-            renderer.push_line_to_text(&line, None);
+            renderer.push_line_to_text(line, None);
             renderer.finish_line();
         }
         if self.buffer.ends_with('\n') {
@@ -119,18 +119,14 @@ impl Tui {
         renderer.render_cur_line(self.current_line(), self.cursor_position);
 
         // TODO scrolling - what if doc_size has changed?
-        let doc_size = renderer.line_count as u16;
+        let doc_size = renderer.line_count;
         let viewport_size = area.bottom();
         let mut scroll_lines = self.scroll_lines;
 
-        if self.update_scroll_position || doc_size != self.doc_size {
-            if doc_size >= self.scroll_lines + viewport_size {
-                scroll_lines = if viewport_size > doc_size {
-                    0
-                } else {
-                    doc_size - viewport_size
-                };
-            }
+        if (self.update_scroll_position || doc_size != self.doc_size)
+            && doc_size >= self.scroll_lines + viewport_size
+        {
+            scroll_lines = doc_size.saturating_sub(viewport_size);
         }
 
         let para = Paragraph::new(renderer.text).scroll((scroll_lines, 0));
@@ -351,10 +347,10 @@ impl<'a> TextRenderer<'a> {
             }
 
             if cursor_position < chars || cursor_position - chars > line.len() {
-                self.push_line_to_text(&line, None);
+                self.push_line_to_text(line, None);
             } else {
                 let cpos = cursor_position - chars;
-                self.push_line_to_text(&line, Some(cpos));
+                self.push_line_to_text(line, Some(cpos));
                 rendered_cursor = true;
             }
 

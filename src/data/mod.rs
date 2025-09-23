@@ -13,10 +13,10 @@ const SEPERATORS: [&str; 2] = [",", ";"];
 const PAIR_SEPERATORS: [&str; 2] = ["=", ":"];
 
 fn delimiters_match(open: char, close: char) -> bool {
-    match (open, close) {
-        ('{', '}') | ('[', ']') | ('(', ')') | ('<', '>') => true,
-        _ => false,
-    }
+    matches!(
+        (open, close),
+        ('{', '}') | ('[', ']') | ('(', ')') | ('<', '>')
+    )
 }
 
 pub fn parse(
@@ -88,14 +88,14 @@ impl sfmt::Display for Data {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct NodePath {
-    root: NodePathRoot,
-    steps: Vec<usize>,
-}
+// #[derive(Clone, Debug)]
+// pub struct NodePath {
+//     root: NodePathRoot,
+//     steps: Vec<usize>,
+// }
 
-#[derive(Clone, Debug)]
-pub enum NodePathRoot {
-    Absolute,
-    Parent,
-}
+// #[derive(Clone, Debug)]
+// pub enum NodePathRoot {
+//     Absolute,
+//     Parent,
+// }

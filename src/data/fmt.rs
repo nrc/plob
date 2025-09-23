@@ -79,14 +79,14 @@ impl NodeKind {
             }
 
             let mut available = available.saturating_sub(result.len());
-            if let Some(prev) = result.chars().rev().next() {
-                if is_open_delimiter(prev) && !is_close_delimiter(n.next_char()) {
-                    if let Some(max_depth) = opts.depth {
-                        if depth > max_depth {
-                            hide = true;
-                            continue;
-                        }
-                    }
+            if let Some(prev) = result.chars().next_back()
+                && is_open_delimiter(prev)
+                && !is_close_delimiter(n.next_char())
+                && let Some(max_depth) = opts.depth
+            {
+                if depth > max_depth {
+                    hide = true;
+                    continue;
                 }
 
                 use CharSpacing::*;
@@ -137,14 +137,15 @@ impl NodeKind {
 
             let mut available =
                 available.saturating_sub(result.len() - result.rfind('\n').unwrap_or(0));
-            if let Some(prev) = result.chars().rev().next() {
-                if is_open_delimiter(prev) && !is_close_delimiter(n.next_char()) {
-                    if let Some(max_depth) = opts.depth {
-                        if depth > max_depth {
-                            hide = true;
-                            continue;
-                        }
-                    }
+            if let Some(prev) = result.chars().next_back()
+                && is_open_delimiter(prev)
+                && !is_close_delimiter(n.next_char())
+            {
+                if let Some(max_depth) = opts.depth
+                    && depth > max_depth
+                {
+                    hide = true;
+                    continue;
                 }
 
                 let next = n.next_char();
