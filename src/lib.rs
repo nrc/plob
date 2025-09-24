@@ -44,33 +44,40 @@ impl Runtime {
 
         if !cmd.is_error() {
             let result = lang::run_cmd(cmd, self);
-            if let ExecResult::Error(errs) = &result {
-                for err in errs {
-                    self.out.report_err(err, src);
+            match &result {
+                ExecResult::Error(errs) => {
+                    for err in errs {
+                        self.out.report_err(err, src);
+                    }
+                    return;
                 }
-            } else {
-                self.history.push((src.to_owned(), result));
+                ExecResult::Echo(value) => {
+                    self.out.echo(&format!("{}: {value}", self.history.len()));
+                }
+                ExecResult::Variable(name) => {
+                    self.out.echo(&format!("{}: ${name}", self.history.len()));
+                }
             }
+
+            self.history.push((src.to_owned(), result));
         }
-    }
-
-    fn echo(&self, value: &Value) {
-        self.out.echo(&value.to_string());
-    }
-
-    fn report(&self, s: &str) {
-        self.out.echo(s);
     }
 
     fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)
     }
 
-    fn get_history(&self, offset: usize) -> Option<&Value> {
-        if offset > self.history.len() {
-            return None;
-        }
-        match &self.history[self.history.len() - offset].1 {
+    fn get_history(&self, offset: isize) -> Option<&Value> {
+        let index = if offset < 0 {
+            if (-offset as usize) > self.history.len() {
+                return None;
+            }
+            self.history.len() - (-offset as usize)
+        } else {
+            offset as usize
+        };
+
+        match &self.history.get(index)?.1 {
             ExecResult::Echo(v) => Some(v),
             ExecResult::Variable(v) => self.get_variable(v),
             _ => unreachable!(),
@@ -91,7 +98,7 @@ impl Runtime {
 
     fn help_message<'a>(&self, mut args: impl Iterator<Item = &'a str>) -> String {
         if let Some(arg) = args.next() {
-            return lang::help_message_for(arg);
+            return lang::help_message_for(arg, args.next());
         }
         r#"
 plob
@@ -101,6 +108,7 @@ plob
 q           quit
 h [fn]      display this help message
               or display help for a function `fn`; use `all` to list all avaialble functions
+              or use `h lang` for language help
 "#
         .to_owned()
     }
@@ -376,13 +384,13 @@ mod test {
     #[test]
     fn test_echo() {
         let mut reporter = MockReporter::default();
-        // TODO formatting of `{}`
+
         reporter.expected_exact = RefCell::new(vec![
-            s("$0"),
-            s("hello { }"),
-            s("$foo"),
-            s("hello { }"),
-            s("hello { }"),
+            s("0: $0"),
+            s("1: hello { }"),
+            s("2: $foo"),
+            s("3: hello { }"),
+            s("4: hello { }"),
         ]);
         let mut runtime = Runtime::new(Box::new(reporter));
         runtime.exec_cmd("= `hello {}`", 0);

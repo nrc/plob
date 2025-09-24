@@ -285,32 +285,26 @@ impl Tui {
     }
 
     fn handle_line(&mut self) {
-        match self.cur_line.chars().next() {
-            None => return,
-            Some('q') => {
-                self.running = false;
-                return;
-            }
-            Some('h') => {
-                self.print(
-                    &self
-                        .runtime
-                        .help_message(self.cur_line[1..].split_whitespace()),
-                );
-                self.cur_line.clear();
-                self.cursor_position = 0;
-                return;
-            }
-            _ => {}
+        if self.cur_line.is_empty() {
+            return;
         }
 
         self.source_lines.push(std::mem::take(&mut self.cur_line));
         self.cursor_position = 0;
 
-        self.runtime.exec_cmd(
-            self.source_lines.last().unwrap(),
-            self.source_lines.len() - 1,
-        );
+        let line = self.source_lines.last().unwrap();
+
+        if line == "q" || line.starts_with("q ") {
+            self.running = false;
+            return;
+        }
+
+        if line == "h" || line.starts_with("h ") {
+            self.print(&self.runtime.help_message(line[1..].split_whitespace()));
+            return;
+        }
+
+        self.runtime.exec_cmd(line, self.source_lines.len() - 1);
     }
 }
 

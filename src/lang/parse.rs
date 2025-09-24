@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{fmt, ops::Deref};
 
 use crate::lang::{
     Token,
@@ -117,12 +117,36 @@ impl From<Result<CmdKind, Token>> for CmdKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Expr {
     Var(String),
-    HistVar(usize),
+    // < 0 means most recent commands, i.e., multiple carets
+    // `^n` and `$n` mean the same but are implemented in different ways. We should probably get rid
+    // of one or unify the implementations.
+    // We might want to support `^-n`, the implementation is already there, we just check and error
+    // at the moment.
+    HistVar(isize),
     Int(i64),
     String(String),
     Blob(String),
     Action(Action),
     Pipe(Option<Box<Node<Expr>>>, Vec<Node<Action>>),
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Var(s) => write!(f, "${s}"),
+            Expr::HistVar(i) if *i < 0 => write!(f, "{}", "^".repeat(-i as usize)),
+            Expr::HistVar(i) => write!(f, "^{i}"),
+            Expr::Int(i) => write!(f, "{i}"),
+            Expr::String(s) if s.len() < 40 => write!(f, "{s}"),
+            Expr::String(s) => {
+                let c = s.chars().next().unwrap();
+                write!(f, "{c}...{c}")
+            }
+            Expr::Blob(_) => write!(f, "`...`"),
+            Expr::Action(_) => write!(f, "<action>"),
+            Expr::Pipe(..) => write!(f, "<pipe>"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -266,19 +290,19 @@ impl CommandParser {
             offset += 1;
         }
         if offset > 1 {
-            return Ok(Node::new(Expr::HistVar(offset), t.char, end - t.char));
+            return Ok(Node::new(Expr::HistVar(-offset), t.char, end - t.char));
         }
 
         if let TokenKind::Number(_) = self.peek(0).kind {
             let num = self.next();
             match num.kind {
                 TokenKind::Number(i) => {
-                    if i <= 0 {
+                    if i < 0 {
                         // TODO not unexpected error
                         return Err(num);
                     }
                     end = num.char + num.len;
-                    return Ok(Node::new(Expr::HistVar(i as usize), t.char, end - t.char));
+                    return Ok(Node::new(Expr::HistVar(i as isize), t.char, end - t.char));
                 }
                 _ => unreachable!(),
             }

@@ -321,9 +321,14 @@ impl Node<Expr> {
             Expr::Var(name) => ctxt.runtime.get_variable(&name).cloned().ok_or(vec![
                 ctxt.make_err(format!("Unknown variable: `${name}`"), self.location),
             ]),
-            Expr::HistVar(n) => ctxt.runtime.get_history(n).cloned().ok_or(vec![
-                ctxt.make_err(format!("Invalid historic value: `^{n}`"), self.location),
-            ]),
+            Expr::HistVar(n) => ctxt
+                .runtime
+                .get_history(n)
+                .cloned()
+                .ok_or(vec![ctxt.make_err(
+                    format!("Invalid historic value: `{}`", self.inner),
+                    self.location,
+                )]),
             Expr::Int(n) => Ok(Value {
                 kind: ValueKind::Number(n),
             }),
