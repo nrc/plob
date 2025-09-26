@@ -38,8 +38,8 @@ impl Runtime {
         let (cmd, errs) = lang::parse_cmd(src, line);
         // TODO If cmd is an error command, then report it and return.
 
-        for e in errs {
-            self.out.report_err(&e, src);
+        for e in &errs {
+            self.out.report_err(e, src);
         }
 
         if !cmd.is_error() {
@@ -60,6 +60,8 @@ impl Runtime {
             }
 
             self.history.push((src.to_owned(), result));
+        } else if errs.is_empty() {
+            self.out.echo(&format!("Unknown error: {cmd:?}"));
         }
     }
 
@@ -393,5 +395,28 @@ mod test {
         runtime.exec_cmd("$foo = $0", 1);
         runtime.exec_cmd("$foo", 1);
         runtime.exec_cmd("`hello {  }`", 0);
+    }
+
+    #[test]
+    fn test_history() {
+        let mut reporter = MockReporter::default();
+
+        reporter.expected_exact = RefCell::new(vec![
+            s("0: a"),
+            s("1: b"),
+            s("2: c"),
+            s("3: c"),
+            s("4: c"),
+            s("5: a"),
+            s("6: b"),
+        ]);
+        let mut runtime = Runtime::new(Box::new(reporter));
+        runtime.exec_cmd("`a`", 0);
+        runtime.exec_cmd("`b`", 0);
+        runtime.exec_cmd("`c`", 0);
+        runtime.exec_cmd("^", 0);
+        runtime.exec_cmd("^", 0);
+        runtime.exec_cmd("^^^^^", 0);
+        runtime.exec_cmd("^1", 0);
     }
 }

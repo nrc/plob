@@ -306,7 +306,7 @@ impl CommandParser {
             }
         }
 
-        Ok(Node::new(Expr::HistVar(1), t.char, t.len))
+        Ok(Node::new(Expr::HistVar(-1), t.char, t.len))
     }
 
     /// pipe ::= lexpr? (`>` pexpr)+
