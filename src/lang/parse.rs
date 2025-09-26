@@ -118,8 +118,6 @@ impl From<Result<CmdKind, Token>> for CmdKind {
 pub(super) enum Expr {
     Var(String),
     // < 0 means most recent commands, i.e., multiple carets
-    // `^n` and `$n` mean the same but are implemented in different ways. We should probably get rid
-    // of one or unify the implementations.
     // We might want to support `^-n`, the implementation is already there, we just check and error
     // at the moment.
     HistVar(isize),

@@ -157,7 +157,9 @@ named arguments. They can also take input through a pipeline (using `>`; for mor
 Variables can be used by naming, e.g, `$bar > fmt()`
 
 A history variable begins with `^` and can be one or more carets (referring to the output of the previous command, or the commands before that using the number of carets).
-`^n` or `$n` refers to the nth command to be successfully executed."),
+`^n` refers to the nth command to be successfully executed (i.e., the number displayed when a command is executed).
+
+Using `=` without a lhs creates a new variable with a numeric name, e.g., `$42`. These can be used in the same way as regular variables (and are unrelated to history variables)."),
         ),
         (
             "pipe",
