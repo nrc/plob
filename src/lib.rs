@@ -268,17 +268,12 @@ impl Error {
 
         let mut result = self.msg.clone();
         result.push('\n');
-        write!(result, "{}   > ", self.line).unwrap();
+        // TODO report the line number when using a file rather than the command line
+        //write!(result, "{}   > ", self.line).unwrap();
         result.push_str(src_line);
         result.push('\n');
         // TODO account for width of line number
-        writeln!(
-            result,
-            "      {}{}",
-            " ".repeat(self.char),
-            "^".repeat(self.len)
-        )
-        .unwrap();
+        writeln!(result, "{}{}", " ".repeat(self.char), "^".repeat(self.len)).unwrap();
 
         result
     }

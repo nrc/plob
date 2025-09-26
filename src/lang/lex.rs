@@ -228,13 +228,10 @@ impl Lexer<'_> {
             return None;
         }
 
-        let mut len = text.len();
+        let len = text.len();
 
         let kind = match self.state {
-            LexState::Ident if text.starts_with('$') => {
-                len -= 1;
-                TokenKind::Var(text[1..].to_owned())
-            }
+            LexState::Ident if text.starts_with('$') => TokenKind::Var(text[1..].to_owned()),
             LexState::Ident => TokenKind::Ident(text),
             LexState::Str(_) | LexState::EscapeStr(_) => TokenKind::String(text),
             LexState::Blob | LexState::BlobStr(_) | LexState::BlobEscapeStr(_) => {
