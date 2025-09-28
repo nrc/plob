@@ -61,7 +61,10 @@ impl Runtime {
 
             self.history.push((src.to_owned(), result));
         } else if errs.is_empty() {
-            self.out.echo(&format!("Unknown error: {cmd:?}"));
+            self.out.report_err(
+                &Error::new(format!("Unknown error: {cmd:?}"), line, 0, src.len()),
+                src,
+            );
         }
     }
 
@@ -69,19 +72,20 @@ impl Runtime {
         self.variables.get(name)
     }
 
-    fn get_history(&self, offset: isize) -> Option<&Value> {
+    fn get_history(&self, offset: isize, position: usize) -> Option<(&str, &Value, usize)> {
         let index = if offset < 0 {
-            if (-offset as usize) > self.history.len() {
+            if (-offset as usize) > position {
                 return None;
             }
-            self.history.len() - (-offset as usize)
+            position - (-offset as usize)
         } else {
             offset as usize
         };
 
-        match &self.history.get(index)?.1 {
-            ExecResult::Echo(v) => Some(v),
-            ExecResult::Variable(v) => self.get_variable(v),
+        let hist = self.history.get(index)?;
+        match &hist.1 {
+            ExecResult::Echo(v) => Some((&hist.0, v, index)),
+            ExecResult::Variable(v) => Some((&hist.0, self.get_variable(v)?, index)),
             _ => unreachable!(),
         }
     }
@@ -166,7 +170,16 @@ impl ValueKind {
     }
 
     #[track_caller]
-    fn expect_str(self) -> String {
+    fn expect_string(self) -> String {
+        match self {
+            ValueKind::String(s) => s,
+            _ => unreachable!(),
+        }
+    }
+
+    #[cfg(test)]
+    #[track_caller]
+    fn expect_str(&self) -> &str {
         match self {
             ValueKind::String(s) => s,
             _ => unreachable!(),
@@ -174,9 +187,9 @@ impl ValueKind {
     }
 
     // #[track_caller]
-    // fn expect_int(self) -> i64 {
+    // fn expect_int(&self) -> i64 {
     //     match self {
-    //         ValueKind::Number(n) => n,
+    //         ValueKind::Number(n) => *n,
     //         _ => unreachable!(),
     //     }
     // }
@@ -265,6 +278,15 @@ pub struct Error {
 }
 
 impl Error {
+    fn new(msg: String, line: usize, char: usize, len: usize) -> Self {
+        Error {
+            msg,
+            line,
+            char,
+            len,
+        }
+    }
+
     fn render(&self, src_line: &str) -> String {
         use std::fmt::Write;
 
@@ -293,7 +315,10 @@ struct BlackHole;
 #[cfg(test)]
 impl Report for BlackHole {
     fn echo(&self, _: &str) {}
-    fn report_err(&self, _: &Error, _: &str) {}
+
+    fn report_err(&self, e: &Error, src: &str) {
+        panic!("Error {e:?} at `{src}`");
+    }
 }
 
 #[cfg(test)]

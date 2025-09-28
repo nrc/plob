@@ -121,6 +121,7 @@ pub(super) enum Expr {
     // We might want to support `^-n`, the implementation is already there, we just check and error
     // at the moment.
     HistVar(isize),
+    Reapply(Node<isize>, NamedArgList),
     Int(i64),
     String(String),
     Blob(String),
@@ -141,16 +142,20 @@ impl fmt::Display for Expr {
                 write!(f, "{c}...{c}")
             }
             Expr::Blob(_) => write!(f, "`...`"),
+            Expr::Reapply(..) => write!(f, "<reapply>"),
             Expr::Action(_) => write!(f, "<action>"),
             Expr::Pipe(..) => write!(f, "<pipe>"),
         }
     }
 }
 
+type ArgList = Vec<(Option<Node<String>>, Node<Expr>)>;
+type NamedArgList = Vec<(Node<String>, Node<Expr>)>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Action {
     // Projection(Node<Selector>),
-    Call(Node<String>, Vec<(Option<Node<String>>, Node<Expr>)>),
+    Call(Node<String>, ArgList),
 }
 
 // #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,13 +237,20 @@ impl CommandParser {
         }
     }
 
-    /// expr ::= var | hist_var | literal | pipe | pexpr
+    /// expr ::= var | hist_var | reapply | literal | pipe | pexpr
     fn expr(&mut self) -> Result<Node<Expr>, Token> {
         let t = self.peek(0);
         match &t.kind {
             TokenKind::Var(_) | TokenKind::Operator(Operator::Caret) => {
+                let is_hist_var = matches!(&t.kind, TokenKind::Operator(Operator::Caret));
+
                 let lhs = self.lexpr()?;
-                if let TokenKind::Operator(Operator::RightArrow) = &self.peek(0).kind {
+
+                let peek = self.peek(0);
+
+                if is_hist_var && let TokenKind::Operator(Operator::Bra) = &peek.kind {
+                    return self.reapply(lhs);
+                } else if let TokenKind::Operator(Operator::RightArrow) = &peek.kind {
                     return self.pipe(Some(lhs));
                 } else {
                     return Ok(lhs);
@@ -291,7 +303,7 @@ impl CommandParser {
             return Ok(Node::new(Expr::HistVar(-offset), t.char, end - t.char));
         }
 
-        if let TokenKind::Number(_) = self.peek(0).kind {
+        let var = if let TokenKind::Number(_) = self.peek(0).kind {
             let num = self.next();
             match num.kind {
                 TokenKind::Number(i) => {
@@ -300,13 +312,48 @@ impl CommandParser {
                         return Err(num);
                     }
                     end = num.char + num.len;
-                    return Ok(Node::new(Expr::HistVar(i as isize), t.char, end - t.char));
+                    Node::new(Expr::HistVar(i as isize), t.char, end - t.char)
                 }
                 _ => unreachable!(),
             }
-        }
+        } else {
+            Node::new(Expr::HistVar(-1), t.char, t.len)
+        };
 
-        Ok(Node::new(Expr::HistVar(-1), t.char, t.len))
+        Ok(var)
+    }
+
+    /// reapply ::= hist_var `(` (ident = expr),* `)`
+    ///
+    /// precondition: `(` && `lhs` is `hist_var`
+    fn reapply(&mut self, lhs: Node<Expr>) -> Result<Node<Expr>, Token> {
+        let lhs = lhs.map(|e| match e {
+            Expr::HistVar(n) => n,
+            _ => unreachable!(),
+        });
+
+        let bra = self.peek(0).clone();
+        self.op(Operator::Bra).unwrap();
+        let args = self.arg_list()?;
+        let ket = self.op(Operator::Ket)?;
+
+        let start = lhs.location.char;
+        let len = ket.location.char + 1 - start;
+
+        Ok(Node::new(
+            Expr::Reapply(
+                lhs,
+                args.into_iter()
+                    .map(|(a, e)| match a {
+                        Some(a) => Ok((a, e)),
+                        // TODO stupid token to error on
+                        None => Err(bra.clone()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            start,
+            len,
+        ))
     }
 
     /// pipe ::= lexpr? (`>` pexpr)+
@@ -336,6 +383,16 @@ impl CommandParser {
     fn pexpr(&mut self) -> Result<Node<Action>, Token> {
         let ident = self.ident()?;
         self.op(Operator::Bra)?;
+        let args = self.arg_list()?;
+        let ket = self.op(Operator::Ket)?;
+
+        let start = ident.location.char;
+        let end = ket.location.char + 1;
+        Ok(Node::new(Action::Call(ident, args), start, end - start))
+    }
+
+    /// (arg),*
+    fn arg_list(&mut self) -> Result<ArgList, Token> {
         let mut args = Vec::new();
         loop {
             if let TokenKind::Operator(Operator::Ket) = &self.peek(0).kind {
@@ -348,11 +405,8 @@ impl CommandParser {
                 break;
             }
         }
-        let ket = self.op(Operator::Ket)?;
 
-        let start = ident.location.char;
-        let end = ket.location.char + 1;
-        Ok(Node::new(Action::Call(ident, args), start, end - start))
+        Ok(args)
     }
 
     /// arg ::= ident `=` expr | expr
@@ -436,7 +490,7 @@ mod test {
         assert_eq!(echoed, Expr::Var(s("foo")));
 
         let echoed = assert_echo("^");
-        assert_eq!(echoed, Expr::HistVar(1));
+        assert_eq!(echoed, Expr::HistVar(-1));
         let echoed = assert_echo("42");
         assert_eq!(echoed, Expr::Int(42));
     }

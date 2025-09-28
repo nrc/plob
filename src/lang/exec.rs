@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 
 use crate::{
     Data, Error, NumberKind, Value, ValueKind, ValueType, data,
-    lang::parse::{Action, Expr, Node, NodeLoc},
+    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc},
 };
 
 pub fn help_message_for(cmd: &str) -> String {
@@ -25,9 +25,11 @@ pub fn help_message_for(cmd: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 pub struct Context<'a> {
     pub runtime: &'a crate::Runtime,
     pub src_line: usize,
+    pub history_position: usize,
 }
 
 impl Context<'_> {
@@ -45,6 +47,7 @@ impl Context<'_> {
         fn_name: &str,
         lhs: Option<Value>,
         args: Vec<(Option<Node<String>>, Node<Expr>)>,
+        arg_overrides: Vec<(Node<String>, Node<Expr>)>,
         loc: NodeLoc,
     ) -> Result<Value, Vec<Error>> {
         // Function lookup.
@@ -56,7 +59,7 @@ impl Context<'_> {
 
         // Check input and args.
         let input = f.type_check_input(lhs, loc, self)?;
-        let args = f.type_check_args(args, loc, self)?;
+        let args = f.type_check_args(args, arg_overrides, loc, self)?;
 
         // Call the function
         (f.call)(input, args, loc, self)
@@ -96,6 +99,19 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
             "read(path: string) > data",
             "read a file into data",
             &call_read,
+        ),
+        #[cfg(test)]
+        Function::new(
+            "test",
+            Some(ValueType::Data),
+            vec![
+                ("a", ValueType::String, false),
+                ("b", ValueType::String, false),
+                ("c", ValueType::String, true),
+            ],
+            "data > test(a: string, b: string, c: string) > data",
+            "test function",
+            &call_test,
         ),
     ]
     .into_iter()
@@ -180,22 +196,38 @@ impl Function {
     fn type_check_args(
         &self,
         args: Vec<(Option<Node<String>>, Node<Expr>)>,
+        arg_overrides: Vec<(Node<String>, Node<Expr>)>,
         loc: NodeLoc,
         ctxt: &mut Context,
     ) -> Result<Vec<Option<ValueKind>>, Vec<Error>> {
         let mut args: Vec<_> = args.into_iter().map(|(n, e)| (n, Some(e))).collect();
+        let mut arg_overrides: Vec<_> = arg_overrides
+            .into_iter()
+            .map(|(n, e)| (Some(n), Some(e)))
+            .collect();
+
         let results: Vec<Result<Option<Value>, Vec<Error>>> = self.args.iter().enumerate().map(|(i, (n, ty, opt))| {
-            let arg = if let Some(arg) = args.iter_mut().find(|(an, _)| matches!(an, Some(an) if &an.inner == n)) {
+            let mut arg = if let Some(arg) = args.iter_mut().find(|(an, _)| matches!(an, Some(an) if &an.inner == n)) {
                 arg.1.take()
             } else if args.len() > i && args[i].0.is_none() {
                 args[i].1.take()
-            } else if *opt {
-                return Ok(None);
             } else {
-                return Err(vec![ctxt.make_err(format!("`{}` requires a `{n}` argument but none found", self.name), loc)]);
+                None
             };
 
-            let value = arg.unwrap().exec(ctxt)?;
+            if let Some(ao) = arg_overrides.iter_mut().find(|(an, _)| matches!(an, Some(an) if &an.inner == n)) {
+                arg = ao.1.take();
+            }
+
+            let Some(arg) = arg else {
+                if *opt {
+                    return Ok(None);
+                } else {
+                    return Err(vec![ctxt.make_err(format!("`{}` requires a `{n}` argument but none found", self.name), loc)]);
+                }
+            };
+
+            let value = arg.exec(ctxt)?;
             value
                 .coerce_to(ty)
                 .map_err(|orig| vec![ctxt.make_err(format!("`{}` expects an argument `{n}` with type `{ty}`, but found type `{}`", self.name, orig.ty()), loc)])
@@ -206,7 +238,11 @@ impl Function {
         let mut errors: Vec<_> = errors.into_iter().flat_map(Result::unwrap_err).collect();
 
         // Check for extra args
-        for (i, (l, e)) in args.iter().enumerate() {
+        for (i, (l, e)) in args
+            .iter()
+            .enumerate()
+            .chain(arg_overrides.iter().enumerate())
+        {
             if e.is_some() {
                 errors.push(ctxt.make_err(
                     format!(
@@ -295,7 +331,7 @@ fn call_read(
     loc: NodeLoc,
     ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
-    let path = args.pop().unwrap().unwrap().expect_str();
+    let path = args.pop().unwrap().unwrap().expect_string();
 
     let Ok(file) = File::open(&path) else {
         return Err(vec![
@@ -315,6 +351,31 @@ fn call_read(
     })
 }
 
+#[cfg(test)]
+static TEST_FN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+static TEST_FN: std::sync::Mutex<
+    Option<Box<fn(&Data, &[Option<ValueKind>], NodeLoc, &mut Context)>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn call_test(
+    lhs: Option<ValueKind>,
+    args: Vec<Option<ValueKind>>,
+    loc: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = lhs.unwrap().expect_data();
+
+    let f = TEST_FN.lock().unwrap();
+    let f = f.as_ref().unwrap();
+    f(&data, &args, loc, ctxt);
+
+    Ok(Value {
+        kind: ValueKind::Data(data),
+    })
+}
+
 impl Node<Expr> {
     pub fn exec(self, ctxt: &mut Context) -> Result<Value, Vec<Error>> {
         match self.inner {
@@ -323,12 +384,55 @@ impl Node<Expr> {
             ]),
             Expr::HistVar(n) => ctxt
                 .runtime
-                .get_history(n)
-                .cloned()
+                .get_history(n, ctxt.history_position)
+                .map(|(_, v, _)| v.clone())
                 .ok_or(vec![ctxt.make_err(
                     format!("Invalid historic value: `{}`", self.inner),
                     self.location,
                 )]),
+            Expr::Reapply(n, args) => {
+                let (src, pos) = ctxt
+                    .runtime
+                    .get_history(n.inner, ctxt.history_position)
+                    .map(|(src, _, i)| (src.to_owned(), i))
+                    .ok_or(vec![ctxt.make_err("Invalid historic value", self.location)])?;
+
+                let (cmd, errs) = super::parse_cmd(&src, 0);
+                if cmd.is_error() || !errs.is_empty() {
+                    return Err(vec![
+                        ctxt.make_err("Could not parse re-application command", self.location),
+                    ]);
+                }
+                let expr = match cmd.kind {
+                    CmdKind::Echo(e) => e,
+                    CmdKind::Assign(_, e) => e,
+                    _ => unreachable!(),
+                };
+
+                let mut ctxt = Context {
+                    history_position: pos,
+                    ..ctxt.clone()
+                };
+                let (lhs, name, prev_args) = match expr.inner {
+                    Expr::Action(Action::Call(name, args)) => (None, name, args),
+                    Expr::Pipe(lhs, mut actions) => {
+                        let last = actions.pop().unwrap();
+                        let pipe_result = eval_pipe(lhs, actions, &mut ctxt, self.location)?;
+                        let (name, args) = match last.inner {
+                            Action::Call(name, args) => (name, args),
+                        };
+                        (Some(pipe_result), name, args)
+                    }
+                    e => {
+                        return Err(vec![ctxt.make_err(
+                            format!("Re-applied command is not a function call (found {e:?})"),
+                            self.location,
+                        )]);
+                    }
+                };
+
+                ctxt.call(&name.inner, lhs, prev_args, args, self.location)
+            }
             Expr::Int(n) => Ok(Value {
                 kind: ValueKind::Number(n),
             }),
@@ -341,32 +445,81 @@ impl Node<Expr> {
                     kind: ValueKind::Data(data),
                 })
             }
-            Expr::Pipe(lhs, actions) => {
-                let mut result = match lhs {
-                    Some(expr) => expr.exec(ctxt)?,
-                    None => ctxt
-                        .runtime
-                        .get_history(1)
-                        .ok_or(vec![ctxt.make_err(
-                            "Pipe with no lhs and no previous statement",
-                            self.location,
-                        )])?
-                        .clone(),
-                };
-
-                for action in actions {
-                    result = match action.inner {
-                        Action::Call(name, args) => {
-                            ctxt.call(&name.inner, Some(result), args, action.location)?
-                        }
-                    }
-                }
-
-                Ok(result)
-            }
+            Expr::Pipe(lhs, actions) => eval_pipe(lhs, actions, ctxt, self.location),
             Expr::Action(action) => match action {
-                Action::Call(name, args) => ctxt.call(&name.inner, None, args, self.location),
+                Action::Call(name, args) => {
+                    ctxt.call(&name.inner, None, args, Vec::new(), self.location)
+                }
             },
         }
+    }
+}
+
+fn eval_pipe(
+    lhs: Option<Box<Node<Expr>>>,
+    actions: Vec<Node<Action>>,
+    ctxt: &mut Context,
+    loc: NodeLoc,
+) -> Result<Value, Vec<Error>> {
+    let mut result = match lhs {
+        Some(expr) => expr.exec(ctxt)?,
+        None => ctxt
+            .runtime
+            .get_history(-1, ctxt.history_position)
+            .map(|(_, v, _)| v.clone())
+            .ok_or(vec![
+                ctxt.make_err("Pipe with no lhs and no previous statement", loc),
+            ])?,
+    };
+
+    for action in actions {
+        result = match action.inner {
+            Action::Call(name, args) => {
+                ctxt.call(&name.inner, Some(result), args, Vec::new(), action.location)?
+            } // TODO reapply in pipe
+        }
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn override_args() {
+        let _lock = TEST_FN_LOCK.lock().unwrap();
+
+        let mut rt = crate::Runtime::new_test();
+        rt.exec_cmd("$a = `foo`", 0);
+
+        {
+            let mut f = TEST_FN.lock().unwrap();
+            *f = Some(Box::new(|input, args, _, _| {
+                assert_eq!(args.len(), 3);
+                assert_eq!(args[0].as_ref().unwrap().expect_str(), "a");
+                assert_eq!(args[1].as_ref().unwrap().expect_str(), "b");
+                assert!(args[2].is_none());
+
+                assert_eq!(input.to_string(), "foo");
+            }));
+        }
+        rt.exec_cmd("> test(a = 'a', b = 'b')", 1);
+
+        {
+            let mut f = TEST_FN.lock().unwrap();
+            *f = Some(Box::new(|input, args, _, _| {
+                assert_eq!(args.len(), 3);
+                assert_eq!(args[0].as_ref().unwrap().expect_str(), "d");
+                assert_eq!(args[1].as_ref().unwrap().expect_str(), "b");
+                assert_eq!(args[2].as_ref().unwrap().expect_str(), "c");
+
+                assert_eq!(input.to_string(), "foo");
+            }));
+        }
+        rt.exec_cmd("^(a = 'd', c = 'c')", 2);
+
+        // TODO test overriding the input (reapply in pipe)
     }
 }

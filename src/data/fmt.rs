@@ -41,7 +41,7 @@ impl NodeKind {
             NodeKind::Tok(Token {
                 kind: TokenKind::String(s),
                 ..
-            }) => format!("{}", s.replace('\n', "\\n").replace('\t', "\\t")),
+            }) => s.replace('\n', "\\n").replace('\t', "\\t"),
             NodeKind::Tok(Token {
                 kind: TokenKind::Delimiter(c),
                 ..

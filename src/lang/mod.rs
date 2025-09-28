@@ -18,18 +18,18 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 
 // TODO tasks/requirements
 //
-// reapply, e.g., `$a > fmt()`; `^(depth=2)`
 // project
 // map `lexpr >> pexpr` e.g., `$0 >> .kind`
 // flatten?
 // concat
 // search/select
+// reapply in pipe, e.g., `$a > fmt()`; `$b > ^(depth=2)`
 
 /// # Grammar
 ///
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
-/// expr ::= var | hist_var | literal | expr project | pipe | repipe | call | reapply
+/// expr ::= var | hist_var | reapply | literal | expr project | pipe | repipe | call
 /// pipe ::= lexpr? (`>` `>`? pexpr)+
 /// lexpr ::= var | hist_var | `(` expr `)`
 /// pexpr ::= project | call | `where` pexpr
@@ -38,7 +38,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 /// project ::= `.` selector
 /// selector ::= int | ident | var | string | `(` selector,* `)`
 /// call ::= ident `(` (ident = expr),* `)`
-/// reapply ::= (var | hist_var) `(` (ident = expr),* `)`
+/// reapply ::= hist_var `(` (ident = expr),* `)`
 /// var ::= `$` ident
 /// hist_var ::= `^`+ | `^` int
 /// literal ::= int | string | blob
@@ -81,6 +81,7 @@ pub fn run_cmd(cmd: Command, runtime: &mut crate::Runtime) -> ExecResult {
     let mut ctxt = exec::Context {
         runtime,
         src_line: cmd.line,
+        history_position: runtime.history.len(),
     };
     match cmd.kind {
         parse::CmdKind::Assign(name, expr) => {
@@ -167,6 +168,15 @@ Using `=` without a lhs creates a new variable with a numeric name, e.g., `$42`.
             "Use `>` to feed input into the next pipeline stage. Input can be a variable or a history variable.
 If there is no explicit input, then the output of the previous command is used.
 The right hand side of the pipe can be a function call.
+"),
+        ),
+        (
+            "reapply",
+            ("Function re-application",
+            "E.g., `^(depth = 2)`
+
+Where a previous expression (indicated by the history variable, which may be any history variable, see `h lang var`) is a function call,
+calls the same function with the same input but with any specified parameters overriding parameters in the original call.
 "),
         ),
     ]
