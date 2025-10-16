@@ -16,13 +16,13 @@ pub struct FmtOptions {
 }
 
 impl Node {
-    pub fn fmt(&self, w: &mut impl Write, opts: &FmtOptions) -> std::fmt::Result {
-        write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH, 0, opts))
+    pub fn fmt(&self, w: &mut impl Write, opts: &FmtOptions, toks: &[Token]) -> std::fmt::Result {
+        write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH, 0, opts, toks))
     }
 
-    fn next_char(&self) -> char {
+    fn next_char(&self, toks: &[Token]) -> char {
         match &self.kind {
-            NodeKind::Tok(token) | NodeKind::Trivia(token) => match &token.kind {
+            NodeKind::Tok(i) | NodeKind::Trivia(i) => match &toks[*i].kind {
                 TokenKind::Word(s) | TokenKind::Symbol(s) => s.chars().next().unwrap(),
                 TokenKind::Delimiter(c) => *c,
                 TokenKind::String(_) => '"',
@@ -30,29 +30,29 @@ impl Node {
                 TokenKind::Comment(_) => '/',
                 TokenKind::Eof => '\n',
             },
-            NodeKind::Seq(nodes) => nodes[0].next_char(),
+            NodeKind::Seq(nodes) => nodes[0].next_char(toks),
         }
     }
 }
 
 impl NodeKind {
-    fn render(&self, indent: usize, available: usize, depth: usize, opts: &FmtOptions) -> String {
+    fn render(
+        &self,
+        indent: usize,
+        available: usize,
+        depth: usize,
+        opts: &FmtOptions,
+        toks: &[Token],
+    ) -> String {
         match self {
-            NodeKind::Tok(Token {
-                kind: TokenKind::String(s),
-                ..
-            }) => s.replace('\n', "\\n").replace('\t', "\\t"),
-            NodeKind::Tok(Token {
-                kind: TokenKind::Delimiter(c),
-                ..
-            }) => c.to_string(),
-            NodeKind::Tok(Token {
-                kind: TokenKind::Word(s) | TokenKind::Symbol(s),
-                ..
-            }) => s.clone(),
+            NodeKind::Tok(i) => match &toks[*i].kind {
+                TokenKind::String(s) => s.replace('\n', "\\n").replace('\t', "\\t"),
+                TokenKind::Delimiter(c) => c.to_string(),
+                TokenKind::Word(s) | TokenKind::Symbol(s) => s.clone(),
+                _ => unreachable!(),
+            },
             NodeKind::Trivia(_) => unreachable!(),
-            NodeKind::Seq(nodes) => Self::render_seq(nodes, indent, available, depth, opts),
-            _ => unreachable!(),
+            NodeKind::Seq(nodes) => Self::render_seq(nodes, indent, available, depth, opts, toks),
         }
     }
 
@@ -62,12 +62,13 @@ impl NodeKind {
         available: usize,
         depth: usize,
         opts: &FmtOptions,
+        toks: &[Token],
     ) -> String {
         let mut result = String::new();
         let mut hide = false;
         for n in nodes {
             if hide {
-                if is_close_delimiter(n.next_char()) {
+                if is_close_delimiter(n.next_char(toks)) {
                     result.push_str(" ... ");
                     hide = false;
                 } else {
@@ -84,12 +85,12 @@ impl NodeKind {
             // If it is likely we'll exceed the available space, skip to multiline layout without even trying
             // to make the node fit on one line.
             if n.count() >= available / 2 {
-                return Self::render_seq_multiline(nodes, indent, available, depth, opts);
+                return Self::render_seq_multiline(nodes, indent, available, depth, opts, toks);
             }
 
             if let Some(prev) = result.chars().next_back() {
                 if is_open_delimiter(prev)
-                    && !is_close_delimiter(n.next_char())
+                    && !is_close_delimiter(n.next_char(toks))
                     && let Some(max_depth) = opts.depth
                     && depth > max_depth
                 {
@@ -97,17 +98,17 @@ impl NodeKind {
                     continue;
                 }
 
-                if CharSpacing::should_space(prev, n) {
+                if CharSpacing::should_space(prev, n, toks) {
                     result.push(' ');
                     available = available.saturating_sub(1);
                 }
             }
 
-            let next = n.kind.render(indent, available, depth + 1, opts);
+            let next = n.kind.render(indent, available, depth + 1, opts, toks);
             result.push_str(&next);
 
             if next.contains('\n') || result.len() > available {
-                return Self::render_seq_multiline(nodes, indent, available, depth, opts);
+                return Self::render_seq_multiline(nodes, indent, available, depth, opts, toks);
             }
         }
         result
@@ -119,12 +120,13 @@ impl NodeKind {
         mut available: usize,
         depth: usize,
         opts: &FmtOptions,
+        toks: &[Token],
     ) -> String {
         let mut result = String::new();
         let mut hide = false;
         for n in nodes {
             if hide {
-                if is_close_delimiter(n.next_char()) {
+                if is_close_delimiter(n.next_char(toks)) {
                     result.push_str(" ... ");
                     hide = false;
                 } else {
@@ -136,7 +138,7 @@ impl NodeKind {
             }
 
             if let Some(prev) = result.chars().next_back() {
-                let next = n.next_char();
+                let next = n.next_char(toks);
 
                 if is_open_delimiter(prev)
                     && !is_close_delimiter(next)
@@ -163,13 +165,13 @@ impl NodeKind {
                     result.push('\n');
                     result.push_str(&FMT_TAB.repeat(indent));
                     available = FMT_MAX_WIDTH.saturating_sub(indent * FMT_TAB_WIDTH);
-                } else if CharSpacing::should_space(prev, n) {
+                } else if CharSpacing::should_space(prev, n, toks) {
                     result.push(' ');
                     available = available.saturating_sub(1);
                 }
             }
 
-            let next = n.kind.render(indent + 1, available, depth + 1, opts);
+            let next = n.kind.render(indent + 1, available, depth + 1, opts, toks);
             available = available.saturating_sub(next.len());
             result.push_str(&next);
         }
@@ -198,9 +200,9 @@ enum CharSpacing {
 
 // TODO not reporting parsing errors? USe code for a blob, but it isn't assigned into a variable, probably a parse error?
 impl CharSpacing {
-    fn should_space(c: char, n: &Node) -> bool {
+    fn should_space(c: char, n: &Node, toks: &[Token]) -> bool {
         let prev = CharSpacing::from_for_left(c);
-        let next = CharSpacing::from_for_right(n);
+        let next = CharSpacing::from_for_right(n, toks);
 
         if prev == CharSpacing::WhiteSpace
             || next == CharSpacing::WhiteSpace
@@ -232,9 +234,9 @@ impl CharSpacing {
         }
     }
 
-    fn from_for_right(n: &Node) -> Self {
+    fn from_for_right(n: &Node, toks: &[Token]) -> Self {
         match &n.kind {
-            NodeKind::Tok(token) | NodeKind::Trivia(token) => match &token.kind {
+            NodeKind::Tok(i) | NodeKind::Trivia(i) => match &toks[*i].kind {
                 TokenKind::Word(_) | TokenKind::String(_) | TokenKind::Comment(_) => {
                     CharSpacing::Loose
                 }
@@ -245,7 +247,7 @@ impl CharSpacing {
                 TokenKind::Symbol(s) if matches!(&**s, "." | ":" | ";" | ",") => CharSpacing::Tight,
                 _ => CharSpacing::Loose,
             },
-            NodeKind::Seq(nodes) => CharSpacing::from_for_right(&nodes[0]),
+            NodeKind::Seq(nodes) => CharSpacing::from_for_right(&nodes[0], toks),
         }
     }
 }
@@ -268,8 +270,8 @@ Command {
   line: 0,
 }"#;
         let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
-        let node = parsed.unwrap_structural();
-        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
+        let (toks, node) = parsed.unwrap_structural();
+        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default(), &toks);
         assert_eq!(
             formatted, text,
             "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"
@@ -292,8 +294,8 @@ Command {
 }"#;
 
         let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
-        let node = parsed.unwrap_structural();
-        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default());
+        let (toks, node) = parsed.unwrap_structural();
+        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default(), &toks);
         assert_eq!(
             formatted, text,
             "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"

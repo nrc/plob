@@ -166,6 +166,7 @@ pub(super) enum Operator {
     RightArrow,
     Caret,
     Hyphen,
+    Star,
 }
 
 impl TryFrom<char> for Operator {
@@ -181,12 +182,13 @@ impl TryFrom<char> for Operator {
             '<' => Ok(Operator::LeftArrow),
             '>' => Ok(Operator::RightArrow),
             '^' => Ok(Operator::Caret),
+            '*' => Ok(Operator::Star),
             _ => Err(()),
         }
     }
 }
 
-const OPS: [char; 8] = ['=', '.', ',', '(', ')', '<', '>', '^'];
+const OPS: [char; 9] = ['=', '.', ',', '(', ')', '<', '>', '^', '*'];
 
 #[derive(Copy, Clone, Debug)]
 enum LexState {

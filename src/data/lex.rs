@@ -9,6 +9,37 @@ pub struct Token {
     pub(super) start: usize,
 }
 
+impl Token {
+    pub fn end(&self) -> usize {
+        self.start
+            + match &self.kind {
+                TokenKind::Word(s) | TokenKind::Symbol(s) | TokenKind::String(s) => s.len(),
+                TokenKind::Delimiter(_) => 1,
+                TokenKind::Newline => 1,
+                TokenKind::Comment(n) => *n,
+                TokenKind::Eof => 0,
+            }
+    }
+
+    pub fn following_eof(last: &Token) -> Self {
+        Token {
+            kind: TokenKind::Eof,
+            start: last.end(),
+        }
+    }
+
+    pub fn matches_str(&self, s: &str) -> bool {
+        match &self.kind {
+            TokenKind::Word(ss) | TokenKind::Symbol(ss) | TokenKind::String(ss) => s == ss,
+            _ => false,
+        }
+    }
+
+    pub fn eq_reloc(&self, other: &Token) -> bool {
+        self.kind == other.kind
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum TokenKind {
     Word(String),

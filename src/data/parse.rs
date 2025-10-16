@@ -10,7 +10,7 @@ pub(super) struct Parser {
     pub(super) errors: Vec<Error>,
     // TODO we don't currently produce any errors, but when we do we'll need to convert from erors
     // on data to error in the lang.
-    tokens: Vec<Token>,
+    pub(super) tokens: Vec<Token>,
     cur_tok: usize,
 }
 
@@ -23,8 +23,8 @@ impl Parser {
         }
     }
 
-    fn next(&mut self) -> Token {
-        let result = self.tokens[self.cur_tok].clone();
+    fn next(&mut self) -> usize {
+        let result = self.cur_tok;
         if self.cur_tok < self.tokens.len() - 1 {
             self.cur_tok += 1;
         }
@@ -79,7 +79,12 @@ impl Parser {
     // Parse a sequence up to and including a closing delimter
     fn delimited(&mut self, delimiter: char, result: &mut Vec<Node>) {
         while let Some(node) = self.structural() {
-            if matches!(&node.kind, NodeKind::Tok(Token { kind: TokenKind::Delimiter(close), ..}) if data::delimiters_match(delimiter, *close))
+            if let NodeKind::Tok(i) = &node.kind
+                && let Token {
+                    kind: TokenKind::Delimiter(close),
+                    ..
+                } = &self.tokens[*i]
+                && data::delimiters_match(delimiter, *close)
             {
                 result.push(node);
                 return;
@@ -96,8 +101,8 @@ pub struct Node {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) enum NodeKind {
-    Tok(Token),
-    Trivia(Token),
+    Tok(usize),
+    Trivia(usize),
     Seq(Vec<Node>),
 }
 
@@ -113,7 +118,78 @@ impl Node {
             NodeKind::Seq(nodes) => nodes.iter().map(Node::count).sum(),
         }
     }
+
+    pub fn token(&self) -> Option<usize> {
+        match &self.kind {
+            NodeKind::Tok(t) | NodeKind::Trivia(t) => Some(*t),
+            NodeKind::Seq(_) => None,
+        }
+    }
+
+    pub fn expect_token_range(&self) -> (usize, usize) {
+        match &self.kind {
+            NodeKind::Tok(t) | NodeKind::Trivia(t) => (*t, *t),
+            NodeKind::Seq(nodes) => (
+                nodes[0].expect_token_range().0,
+                nodes.last().unwrap().expect_token_range().1,
+            ),
+        }
+    }
+
+    pub fn eq_reloc(&self, other: &Node, toks_self: &[Token], toks_other: &[Token]) -> bool {
+        self.kind.eq_reloc(&other.kind, toks_self, toks_other)
+    }
 }
+
+impl NodeKind {
+    pub fn eq_reloc(&self, other: &NodeKind, toks_self: &[Token], toks_other: &[Token]) -> bool {
+        match (self, other) {
+            (NodeKind::Tok(t1), NodeKind::Tok(t2))
+            | (NodeKind::Trivia(t1), NodeKind::Trivia(t2)) => {
+                toks_self[*t1].eq_reloc(&toks_other[*t2])
+            }
+            (NodeKind::Seq(ns1), NodeKind::Seq(ns2)) => {
+                let mut iter1 = ns1.iter().filter(|n| !n.is_trivial());
+                let mut iter2 = ns2.iter().filter(|n| !n.is_trivial());
+                std::iter::zip(&mut iter1, &mut iter2)
+                    .all(|(n1, n2)| n1.eq_reloc(n2, toks_self, toks_other))
+                    && iter1.next().is_none()
+                    && iter2.next().is_none()
+            }
+            _ => false,
+        }
+    }
+}
+
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct NodePath(Vec<usize>);
+
+// impl NodePath {
+//     pub fn new() -> Self {
+//         NodePath(Vec::new())
+//     }
+
+//     pub fn step(&self, next: usize) -> Self {
+//         let mut p = self.0.clone();
+//         p.push(next);
+//         NodePath(p)
+//     }
+
+//     pub fn resolve<'a>(&self, node: &'a Node) -> Option<&'a Node> {
+//         fn resolve<'a>(path: &[usize], node: &'a Node) -> Option<&'a Node> {
+//             if path.is_empty() {
+//                 return Some(node);
+//             }
+
+//             match &node.kind {
+//                 NodeKind::Seq(nodes) if path[0] < nodes.len() => resolve(&path[1..], &nodes[path[0]]),
+//                 _ => None,
+//             }
+//         }
+
+//         resolve(&self.0, node)
+//     }
+// }
 
 #[cfg(test)]
 mod test {

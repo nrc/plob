@@ -154,18 +154,68 @@ type NamedArgList = Vec<(Node<String>, Node<Expr>)>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Action {
-    // Projection(Node<Selector>),
+    Projection(Option<Box<Node<Expr>>>, Node<Selector>),
     Call(Node<String>, ArgList),
 }
 
-// #[derive(Clone, Debug, Eq, PartialEq)]
-// pub(super) enum Selector {
-//     Var(String),
-//     Int(i64),
-//     String(String),
-//     Ident(String),
-//     Seq(Vec<Selector>),
-// }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Selector {
+    Int(i64),
+    String(String),
+    Ident(String),
+    All,
+    Seq(Vec<Node<Selector>>),
+}
+
+impl Selector {
+    pub fn numeric(&self) -> Option<Vec<i64>> {
+        match self {
+            Selector::Int(i) => Some(vec![*i]),
+            Selector::Seq(ns) => ns
+                .iter()
+                .map(|n| match n.inner {
+                    Selector::Int(i) => Some(i),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    }
+
+    pub fn matches(
+        &self,
+        node: &crate::data::reparse::Node,
+        index: usize,
+        list_len: usize,
+        toks: &[crate::data::Token],
+    ) -> bool {
+        match self {
+            Selector::Int(n) => {
+                let i = if *n < 0 {
+                    list_len - (-n as usize)
+                } else {
+                    *n as usize
+                };
+                index == i
+            }
+            Selector::String(s) | Selector::Ident(s) => match node {
+                crate::data::reparse::Node::Todo => true,
+                crate::data::reparse::Node::Error(_) => true,
+                crate::data::reparse::Node::None => false,
+                crate::data::reparse::Node::List(..) => false,
+                crate::data::reparse::Node::Group(_) => false,
+                crate::data::reparse::Node::Pair(k, ..) => {
+                    self.matches(k, usize::MAX, list_len, toks)
+                }
+                crate::data::reparse::Node::Atom(_, t) => toks[*t].matches_str(s),
+            },
+            Selector::All => true,
+            Selector::Seq(s) => s
+                .iter()
+                .any(|s| s.inner.matches(node, index, list_len, toks)),
+        }
+    }
+}
 
 pub(super) struct CommandParser {
     tokens: Vec<Token>,
@@ -252,6 +302,8 @@ impl CommandParser {
                     return self.reapply(lhs);
                 } else if let TokenKind::Operator(Operator::RightArrow) = &peek.kind {
                     return self.pipe(Some(lhs));
+                } else if let TokenKind::Operator(Operator::Dot) = &peek.kind {
+                    return Ok(self.projection(Some(lhs))?.map(Expr::Action));
                 } else {
                     return Ok(lhs);
                 }
@@ -378,9 +430,13 @@ impl CommandParser {
         ))
     }
 
-    /// pexpr ::= call
+    /// pexpr ::= call | `.` selector
     /// call ::= ident `(` (arg),* `)`
     fn pexpr(&mut self) -> Result<Node<Action>, Token> {
+        if let TokenKind::Operator(Operator::Dot) = &self.peek(0).kind {
+            return self.projection(None);
+        }
+
         let ident = self.ident()?;
         self.op(Operator::Bra)?;
         let args = self.arg_list()?;
@@ -389,6 +445,19 @@ impl CommandParser {
         let start = ident.location.char;
         let end = ket.location.char + 1;
         Ok(Node::new(Action::Call(ident, args), start, end - start))
+    }
+
+    /// projection ::= lexpr? `.` selector
+    fn projection(&mut self, lhs: Option<Node<Expr>>) -> Result<Node<Action>, Token> {
+        let dot = self.op(Operator::Dot)?;
+        let selector = self.selector()?;
+        let len = selector.location.char - dot.location.char + selector.location.len;
+
+        Ok(Node::new(
+            Action::Projection(lhs.map(Box::new), selector),
+            dot.location.char,
+            len,
+        ))
     }
 
     /// (arg),*
@@ -420,6 +489,43 @@ impl CommandParser {
 
         let expr = self.expr()?;
         Ok((None, expr))
+    }
+
+    /// selector ::= int | ident | string | `(` selector,* `)`
+    fn selector(&mut self) -> Result<Node<Selector>, Token> {
+        if let TokenKind::Operator(Operator::Bra) = &self.peek(0).kind {
+            let bra = self.next();
+            let mut nested = Vec::new();
+            loop {
+                if let TokenKind::Operator(Operator::Ket) = &self.peek(0).kind {
+                    break;
+                }
+                nested.push(self.selector()?);
+                if self.peek(0).kind == TokenKind::Operator(Operator::Comma) {
+                    self.next();
+                } else {
+                    break;
+                }
+            }
+            let ket = self.op(Operator::Ket)?;
+            return Ok(Node::new(
+                Selector::Seq(nested),
+                bra.char,
+                ket.location.char - bra.char + 1,
+            ));
+        }
+
+        let t = self.next();
+        match t.kind {
+            TokenKind::Number(n) => Ok(Node::new(Selector::Int(n), t.char, t.len)),
+            TokenKind::Ident(s) => Ok(Node::new(Selector::Ident(s), t.char, t.len)),
+            TokenKind::String(s) => Ok(Node::new(Selector::String(s), t.char, t.len)),
+            TokenKind::Operator(Operator::Star) => Ok(Node::new(Selector::All, t.char, t.len)),
+            _ => {
+                self.restore_tok(t.clone());
+                Err(t)
+            }
+        }
     }
 
     fn ident(&mut self) -> Result<Node<String>, Token> {

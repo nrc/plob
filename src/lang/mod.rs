@@ -19,9 +19,14 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 // TODO tasks/requirements
 //
 // project
-// map `lexpr >> pexpr` e.g., `$0 >> .kind`
+//  - docs
+//  - test on data with different structures
+//  - how deeply do we need to reparse? (TODO in eval_projection)
+//  - selectors with mix of numbers and idents
+// diff function to compare data
+// np? map `lexpr >> pexpr` e.g., `$0 >> .kind` (should we even need syntax for this rather than just a pipe?)
 // flatten?
-// concat
+// dbg should generate data (requires returning multiple values - could use sequence data, in which case need array access)
 // search/select
 // reapply in pipe, e.g., `$a > fmt()`; `$b > ^(depth=2)`
 
@@ -29,14 +34,14 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 ///
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
-/// expr ::= var | hist_var | reapply | literal | expr project | pipe | repipe | call
+/// expr ::= var | hist_var | reapply | literal | lexpr project | pipe | repipe | call
 /// pipe ::= lexpr? (`>` `>`? pexpr)+
 /// lexpr ::= var | hist_var | `(` expr `)`
 /// pexpr ::= project | call | `where` pexpr
 /// repipe ::= var? (`<` `<`? rexpr)+  // replay
 /// rexpr ::= hist_var,+ | pexpr
-/// project ::= `.` selector
-/// selector ::= int | ident | var | string | `(` selector,* `)`
+/// project ::= (`.` selector)+
+/// selector ::= int | ident | string | `(` selector,* `)` | `*`
 /// call ::= ident `(` (ident = expr),* `)`
 /// reapply ::= hist_var `(` (ident = expr),* `)`
 /// var ::= `$` ident

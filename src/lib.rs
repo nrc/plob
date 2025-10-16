@@ -1,4 +1,5 @@
 #![feature(trait_alias)]
+#![feature(assert_matches)]
 
 pub mod data;
 pub mod lang;
@@ -126,6 +127,10 @@ pub struct Value {
 }
 
 impl Value {
+    fn new(kind: ValueKind) -> Value {
+        Value { kind }
+    }
+
     fn coerce_to(self, ty: &ValueType) -> Result<Value, Value> {
         use ValueKind::*;
         match (self.kind, ty) {

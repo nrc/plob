@@ -1,8 +1,9 @@
 use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 
 use crate::{
-    Data, Error, NumberKind, Value, ValueKind, ValueType, data,
-    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc},
+    Error, NumberKind, Value, ValueKind, ValueType,
+    data::{self, Token, reparse::Node as RNode},
+    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, Selector},
 };
 
 pub fn help_message_for(cmd: &str) -> String {
@@ -99,6 +100,14 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
             "read(path: string) > data",
             "read a file into data",
             &call_read,
+        ),
+        Function::new(
+            "dbg",
+            Some(ValueType::Data),
+            vec![],
+            "data > read() > string",
+            "returns debug information about the input",
+            &call_dbg,
         ),
         #[cfg(test)]
         Function::new(
@@ -304,25 +313,35 @@ fn call_ty(
     })
 }
 
+fn call_dbg(
+    lhs: Option<ValueKind>,
+    _args: Vec<Option<ValueKind>>,
+    _loc: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = lhs.unwrap().expect_data();
+    let reparsed = data::reparse::with_reparsed(&data, None, ctxt.runtime, |reparsed, _| {
+        Ok(format!("{reparsed:?}"))
+    })?;
+
+    Ok(Value {
+        kind: ValueKind::String(format!("{data:?}\n\n{reparsed}")),
+    })
+}
+
 fn call_count(
     lhs: Option<ValueKind>,
     _: Vec<Option<ValueKind>>,
-    loc: NodeLoc,
+    _loc: NodeLoc,
     ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
 
-    crate::data::reparse::require_reparsed(&data, Some(1), ctxt.runtime);
-    match data {
-        Data::Struct(_, r) => {
-            let reparsed = &ctxt.runtime.metadata.borrow()[&r].reparsed;
-            Ok(Value {
-                kind: ValueKind::Number(reparsed.count() as i64),
-            })
-        }
-        Data::Unknown => Err(vec![ctxt.make_err("unknown data input", loc)]),
-        _ => unimplemented!(),
-    }
+    crate::data::reparse::with_reparsed(&data, Some(1), ctxt.runtime, |reparsed, _| {
+        Ok(Value {
+            kind: ValueKind::Number(reparsed.count() as i64),
+        })
+    })
 }
 
 fn call_read(
@@ -355,7 +374,7 @@ fn call_read(
 static TEST_FN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 static TEST_FN: std::sync::Mutex<
-    Option<Box<fn(&Data, &[Option<ValueKind>], NodeLoc, &mut Context)>>,
+    Option<Box<fn(&crate::Data, &[Option<ValueKind>], NodeLoc, &mut Context)>>,
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
@@ -420,6 +439,14 @@ impl Node<Expr> {
                         let pipe_result = eval_pipe(lhs, actions, &mut ctxt, self.location)?;
                         let (name, args) = match last.inner {
                             Action::Call(name, args) => (name, args),
+                            e => {
+                                return Err(vec![ctxt.make_err(
+                                    format!(
+                                        "Re-applied command is not a function call (found {e:?})"
+                                    ),
+                                    self.location,
+                                )]);
+                            }
                         };
                         (Some(pipe_result), name, args)
                     }
@@ -450,6 +477,10 @@ impl Node<Expr> {
                 Action::Call(name, args) => {
                     ctxt.call(&name.inner, None, args, Vec::new(), self.location)
                 }
+                Action::Projection(lhs, s) => {
+                    let result = lhs.unwrap().exec(ctxt)?;
+                    eval_projection(result, s, ctxt, self.location)
+                }
             },
         }
     }
@@ -476,11 +507,187 @@ fn eval_pipe(
         result = match action.inner {
             Action::Call(name, args) => {
                 ctxt.call(&name.inner, Some(result), args, Vec::new(), action.location)?
-            } // TODO reapply in pipe
+            }
+            Action::Projection(_, s) => eval_projection(result, s, ctxt, loc)?,
+            // TODO reapply in pipe
         }
     }
 
     Ok(result)
+}
+
+fn eval_projection(
+    lhs: Value,
+    selector: Node<Selector>,
+    ctxt: &mut Context,
+    loc: NodeLoc,
+) -> Result<Value, Vec<Error>> {
+    let data = match lhs.kind {
+        ValueKind::Data(data) => data,
+        ValueKind::String(_) => {
+            return Err(vec![ctxt.make_err("Cannot project over a string", loc)]);
+        }
+        ValueKind::Number(_) => {
+            return Err(vec![ctxt.make_err("Cannot project over a number", loc)]);
+        }
+        ValueKind::Error => return Ok(Value::new(ValueKind::Error)),
+    };
+
+    if selector.inner == Selector::All {
+        return Ok(Value::new(ValueKind::Data(data)));
+    }
+
+    // TODO depth 2 or 3 or 4?
+    let tokens = data::reparse::with_reparsed(&data, Some(4), ctxt.runtime, |reparsed, toks| {
+        project_node(reparsed, &selector, toks, ctxt)
+    })?;
+    if tokens.is_empty() {
+        return Ok(Value::new(ValueKind::Data(data::Data::None)));
+    }
+    let eof = Token::following_eof(tokens.last().unwrap());
+    let data = crate::data::parse_tokens(tokens.into_iter().chain(Some(eof)), ctxt.runtime)?;
+    Ok(Value::new(ValueKind::Data(data)))
+}
+
+fn project_node(
+    node: &RNode,
+    selector: &Node<Selector>,
+    toks: &[Token],
+    _ctxt: &Context,
+) -> Result<Vec<Token>, Vec<Error>> {
+    match node {
+        RNode::List(l) => {
+            if let Some(ns) = selector.numeric() {
+                // select
+                let tokens = ns
+                    .into_iter()
+                    .filter_map(|n| {
+                        let i = if n < 0 {
+                            l.children.len() - (-n as usize)
+                        } else {
+                            n as usize
+                        };
+                        l.children.get(i)
+                    })
+                    .flat_map(|n| n.tokens(toks));
+
+                let tokens: Vec<Token> = l
+                    .start_tok(toks)
+                    .into_iter()
+                    .chain(tokens)
+                    .chain(l.end_tok(toks))
+                    .cloned()
+                    .collect();
+                Ok(tokens)
+            } else {
+                // try to select, then fallback to map and recurse
+                let mut nodes = l
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, n)| selector.matches(n, *i, l.children.len(), toks))
+                    .peekable();
+
+                // TODO we should return empty here if tokens is empty, but could have succeeded (i.e., a genuine empty match)
+                if nodes.peek().is_some() {
+                    // preserve the list boilerplate
+                    let tokens: Vec<Token> = l
+                        .start_tok(toks)
+                        .into_iter()
+                        .chain(nodes.flat_map(|(i, _)| l.toks_for(i, toks)))
+                        .chain(l.end_tok(toks))
+                        .cloned()
+                        .collect();
+                    return Ok(tokens);
+                }
+
+                // map and recurse
+                let mut tokens = Vec::new();
+                let mut errs = Vec::new();
+                for (i, n) in l.children.iter().enumerate() {
+                    match project_node(n, selector, toks, _ctxt) {
+                        Ok(ts) if ts.is_empty() => continue,
+                        Ok(mut ts) => tokens.append(&mut ts),
+                        Err(mut es) => errs.append(&mut es),
+                    }
+
+                    // Separator
+                    if let Some(next) = l.upper_bound(i)
+                        && let Some(e) = n.end_token()
+                    {
+                        tokens.extend(toks[e + 1..next].iter().cloned());
+                    }
+                }
+
+                if !errs.is_empty() {
+                    return Err(errs);
+                }
+                let tokens: Vec<Token> = l
+                    .start_tok(toks)
+                    .into_iter()
+                    .cloned()
+                    .chain(tokens)
+                    .chain(l.end_tok(toks).into_iter().cloned())
+                    .collect();
+                Ok(tokens)
+            }
+        }
+        // Skip over details to get to a list e.g., `foo { ... }`
+        RNode::Group(nodes) => {
+            // Try to find a list node to project, skipping up to 3 real nodes.
+            let mut list_index = None;
+            let mut skipped = 0;
+            for (i, n) in nodes.iter().enumerate() {
+                match n {
+                    // Just ignore these nodes
+                    RNode::Error(_) | RNode::None => continue,
+                    RNode::List(_) => {
+                        list_index = Some(i);
+                        break;
+                    }
+                    RNode::Todo | RNode::Group(_) | RNode::Pair(..) | RNode::Atom(..) => {
+                        skipped += 1
+                    }
+                }
+
+                if skipped >= 3 {
+                    break;
+                }
+            }
+
+            let Some(list_index) = list_index else {
+                return Ok(Vec::new());
+            };
+
+            let node_toks = project_node(&nodes[list_index], selector, toks, _ctxt)?;
+
+            // toks for before and after nodes
+            let start_toks = if list_index != 0
+                && let Some(first_range) = nodes[0].token_range()
+                && let Some(node_range) = nodes[list_index].token_range()
+            {
+                &toks[*first_range.start()..*node_range.start()]
+            } else {
+                &[]
+            };
+            let end_toks: &[Token] = if list_index < nodes.len() - 1
+                && let Some(last_range) = nodes[nodes.len() - 1].token_range()
+                && let Some(node_range) = nodes[list_index].token_range()
+            {
+                &toks[*node_range.end()..*last_range.end()]
+            } else {
+                &[]
+            };
+
+            Ok(start_toks
+                .iter()
+                .cloned()
+                .chain(node_toks)
+                .chain(end_toks.iter().cloned())
+                .collect())
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 #[cfg(test)]
@@ -521,5 +728,388 @@ mod test {
         rt.exec_cmd("^(a = 'd', c = 'c')", 2);
 
         // TODO test overriding the input (reapply in pipe)
+    }
+
+    #[test]
+    fn project_index() {
+        // TODO test on other kinds of sequences
+        let runtime = &crate::Runtime::new_test();
+        let (mut ctxt, data) = init(
+            r#"Command {
+    source: "$foo = $bar",
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+    line: 0,
+}
+Command {
+    source: "$foo",
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // Selector::All
+        let result = eval_project(&data, Selector::All, &mut ctxt);
+        assert_eq!(result.kind.expect_data(), data);
+
+        // Out of bounds selector
+        let result = eval_project(&data, Selector::Int(2), &mut ctxt);
+        assert_eq!(result.kind.expect_data(), crate::data::Data::None);
+
+        // In bounds selector
+        let result = eval_project(&data, Selector::Int(1), &mut ctxt);
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    source: "$foo",
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // Multiple selector, just one
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![Node::new(Selector::Int(1), 0, 0)]),
+            &mut ctxt,
+        );
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    source: "$foo",
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // Multiple selector, both
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Int(0), 0, 0),
+                Node::new(Selector::Int(1), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        let result = result.kind.expect_data();
+        assert!(result.eq_reloc(&data), "Not equal:\n{}\n\n{}", result, data);
+    }
+
+    #[test]
+    fn project_named_select() {
+        let runtime = &crate::Runtime::new_test();
+        let (mut ctxt, data) = init(
+            r#"{
+    source: "$foo = $bar",
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // Unknown selector
+        let result = eval_project(&data, Selector::Ident("foo".to_owned()), &mut ctxt);
+        assert_eq_reloc(result, r#"{}"#, runtime);
+
+        // Known selector
+        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        assert_eq_reloc(
+            result,
+            r#"{
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+}"#,
+            runtime,
+        );
+
+        // Multiple selectors
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Ident("source".to_owned()), 0, 0),
+                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_reloc(
+            result,
+            r#"{
+    source: "$foo = $bar",
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // With a name before the struct
+        let (mut ctxt, data) = init(
+            r#"Command {
+    source: "$foo = $bar",
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // Unknown selector
+        let result = eval_project(&data, Selector::Ident("foo".to_owned()), &mut ctxt);
+        assert_eq_reloc(result, r#"Command {}"#, runtime);
+
+        // Known selector
+        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+}"#,
+            runtime,
+        );
+
+        // Multiple selectors
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Ident("source".to_owned()), 0, 0),
+                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    source: "$foo = $bar",
+    line: 0,
+}"#,
+            runtime,
+        );
+    }
+
+    #[test]
+    fn project_named_mapped() {
+        let runtime = &crate::Runtime::new_test();
+        let (mut ctxt, data) = init(
+            r#"Command {
+    source: "$foo = $bar",
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+    line: 0,
+}
+Command {
+    source: "$foo",
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        // One mapped selector
+        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+}
+Command {
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+}"#,
+            runtime,
+        );
+
+        // multiple mapped selectors
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Ident("source".to_owned()), 0, 0),
+                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_reloc(
+            result,
+            r#"Command {
+    source: "$foo = $bar",
+    line: 0,
+}
+Command {
+    source: "$foo",
+    line: 0,
+}"#,
+            runtime,
+        );
+
+        let (mut ctxt, data) = init(
+            r#"[Command {
+    source: "$foo = $bar",
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+    line: 0,
+},
+Command {
+    source: "$foo",
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+    line: 0,
+}]"#,
+            runtime,
+        );
+
+        // One mapped selector
+        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        assert_eq_reloc(
+            result,
+            r#"[Command {
+    kind: Assign(
+        Some(
+            "foo",
+        ),
+        Var(
+            "bar",
+        ),
+    ),
+},
+Command {
+    kind: Echo(
+        Var(
+            "foo\n",
+        ),
+    ),
+}]"#,
+            runtime,
+        );
+
+        // multiple mapped selectors
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Ident("source".to_owned()), 0, 0),
+                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_reloc(
+            result,
+            r#"[Command {
+    source: "$foo = $bar",
+    line: 0,
+},
+Command {
+    source: "$foo",
+    line: 0,
+}]"#,
+            runtime,
+        );
+    }
+
+    #[track_caller]
+    fn init<'a>(code: &str, runtime: &'a crate::Runtime) -> (Context<'a>, crate::Data) {
+        let data = crate::data::parse(code, 0, &runtime).unwrap();
+        let ctxt = Context {
+            runtime,
+            src_line: 0,
+            history_position: 0,
+        };
+
+        (ctxt, data)
+    }
+
+    #[track_caller]
+    fn eval_project(data: &crate::Data, selector: Selector, ctxt: &mut Context) -> Value {
+        eval_projection(
+            Value::new(ValueKind::Data(data.clone())),
+            Node::new(selector, 0, 0),
+            ctxt,
+            NodeLoc { char: 0, len: 0 },
+        )
+        .unwrap()
+    }
+
+    #[track_caller]
+    fn assert_eq_reloc(result: Value, expected: &str, runtime: &crate::Runtime) {
+        let data1 = crate::data::parse(expected, 0, runtime).unwrap();
+
+        let result = result.kind.expect_data();
+        assert!(
+            result.eq_reloc(&data1),
+            "Not equal:\n`{}`\n\n`{}`",
+            result,
+            data1
+        );
     }
 }
