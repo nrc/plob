@@ -177,28 +177,27 @@ pub fn with_reparsed<T>(
     runtime: &crate::Runtime,
     f: impl Fn(&Node, &[Token]) -> Result<T, Vec<Error>>,
 ) -> Result<T, Vec<Error>> {
-    match data {
-        // TODO create an error here, but how to make a data error without using lang stuff?
-        data::Data::Unknown => Err(vec![]),
-        data::Data::Struct(toks, node, r) => {
-            let mut metas = runtime.metadata.borrow_mut();
-            let metadata = metas.get_mut(r).unwrap();
-            match (metadata.reparse_depth, depth) {
-                (None, _) => {}
-                (Some(md), Some(d)) if md >= d => {}
-                _ => {
-                    metadata.reparsed = reparse(node, Hint::StructSeq, depth, toks);
-                    metadata.reparse_depth = depth;
+    runtime.with_meta_data(data.meta, |metadata| {
+        match metadata {
+            // TODO create an error here, but how to make a data error without using lang stuff?
+            data::MetaData::Tabular(_) => Err(vec![]),
+            data::MetaData::Struct(smd) => {
+                match (smd.reparse_depth, depth) {
+                    (None, _) => {}
+                    (Some(md), Some(d)) if md >= d => {}
+                    _ => {
+                        smd.reparsed = reparse(&smd.parsed, Hint::StructSeq, depth, &smd.tokens);
+                        smd.reparse_depth = depth;
+                    }
                 }
-            }
 
-            f(&metadata.reparsed, toks)
+                f(&smd.reparsed, &smd.tokens)
+            }
+            data::MetaData::None => f(&Node::None, &[]),
+            data::MetaData::Atom => unimplemented!(),
+            data::MetaData::Sequence => unimplemented!(),
         }
-        data::Data::None => f(&Node::None, &[]),
-        data::Data::Atom => unimplemented!(),
-        data::Data::Sequence => unimplemented!(),
-        data::Data::Tabular => unimplemented!(),
-    }
+    })
 }
 
 fn reparse(input: &PNode, hint: Hint, depth: Option<usize>, toks: &[Token]) -> Node {
@@ -417,10 +416,9 @@ mod test {
             ),
             line: 0,
           }"#;
-        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
+        let parsed = crate::data::parse_structural(text).unwrap().unwrap();
         eprintln!("{parsed:?}\n\n");
-        let (toks, p_node) = parsed.unwrap_structural();
-        let reparsed = reparse(&p_node, Hint::StructSeq, None, &toks);
+        let reparsed = reparse(&parsed.parsed, Hint::StructSeq, None, &parsed.tokens);
         eprintln!("{reparsed:?}");
         match reparsed {
             Node::List(l) => {
@@ -517,14 +515,13 @@ mod test {
             ),
             line: 0,
           }"#;
-        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
+        let parsed = crate::data::parse_structural(text).unwrap().unwrap();
         eprintln!("{parsed:?}\n\n");
-        let (toks, p_node) = parsed.unwrap_structural();
-        let reparsed = reparse(&p_node, Hint::StructSeq, Some(0), &toks);
+        let reparsed = reparse(&parsed.parsed, Hint::StructSeq, Some(0), &parsed.tokens);
         eprintln!("{reparsed:?}");
         assert_eq!(reparsed, Node::Todo);
 
-        let reparsed = reparse(&p_node, Hint::StructSeq, Some(1), &toks);
+        let reparsed = reparse(&parsed.parsed, Hint::StructSeq, Some(1), &parsed.tokens);
         eprintln!("{reparsed:?}");
         match reparsed {
             Node::List(l) => {
@@ -545,7 +542,7 @@ mod test {
             _ => unreachable!(),
         }
 
-        let reparsed = reparse(&p_node, Hint::StructSeq, Some(2), &toks);
+        let reparsed = reparse(&parsed.parsed, Hint::StructSeq, Some(2), &parsed.tokens);
         eprintln!("{reparsed:?}");
         match reparsed {
             Node::List(l) => {

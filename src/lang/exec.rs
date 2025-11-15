@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 
 use crate::{
     Error, NumberKind, Value, ValueKind, ValueType,
-    data::{self, Token, reparse::Node as RNode},
+    data::{self, Data, Token, reparse::Node as RNode},
     lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, Selector},
 };
 
@@ -102,6 +102,14 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
             &call_read,
         ),
         Function::new(
+            "table",
+            Some(ValueType::Data),
+            vec![("col", ValueType::String, false), ("row", ValueType::String, true)],
+            "data > table(col: string, row?: string) > data",
+            "parse data into tabular data\nTakes a column separator and an optional row separator (defaults to newlines).",
+            &call_table,
+        ),
+        Function::new(
             "dbg",
             Some(ValueType::Data),
             vec![],
@@ -118,7 +126,7 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
                 ("b", ValueType::String, false),
                 ("c", ValueType::String, true),
             ],
-            "data > test(a: string, b: string, c: string) > data",
+            "data > test(a: string, b: string, c?: string) > data",
             "test function",
             &call_test,
         ),
@@ -180,7 +188,11 @@ impl Function {
                 (ValueType::Number(NumberKind::Int), k @ ValueKind::Number(_)) => Ok(Some(k)),
                 (ValueType::Number(NumberKind::UInt), k @ ValueKind::Number(_)) => Ok(Some(k)),
                 (ty, k) => Err(vec![ctxt.make_err(
-                    format!("`{}` expected {ty} as input, found: `{k}`", self.name),
+                    format!(
+                        "`{}` expected {ty} as input, found: `{}`",
+                        self.name,
+                        crate::ValueDisplay(&Value { kind: k }, ctxt.runtime)
+                    ),
                     loc,
                 )]),
             },
@@ -285,9 +297,10 @@ fn call_fmt(
     lhs: Option<ValueKind>,
     mut args: Vec<Option<ValueKind>>,
     _loc: NodeLoc,
-    _ctxt: &mut Context,
+    ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
+    data.resolve_structural(ctxt.runtime);
     let depth = args.pop().unwrap();
 
     let mut opts = data::FmtOptions::default();
@@ -296,7 +309,7 @@ fn call_fmt(
     }
 
     let mut buf = String::new();
-    data.fmt(&mut buf, &opts).unwrap();
+    data.fmt(&mut buf, &opts, ctxt.runtime).unwrap();
     Ok(Value {
         kind: ValueKind::String(buf),
     })
@@ -309,7 +322,7 @@ fn call_ty(
     _ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
     Ok(Value {
-        kind: ValueKind::String(lhs.unwrap().to_string()),
+        kind: ValueKind::String(lhs.unwrap().ty().to_string()),
     })
 }
 
@@ -320,6 +333,7 @@ fn call_dbg(
     ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
+    data.resolve_structural(ctxt.runtime);
     let reparsed = data::reparse::with_reparsed(&data, None, ctxt.runtime, |reparsed, _| {
         Ok(format!("{reparsed:?}"))
     })?;
@@ -336,6 +350,7 @@ fn call_count(
     ctxt: &mut Context,
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
+    data.resolve_structural(ctxt.runtime);
 
     crate::data::reparse::with_reparsed(&data, Some(1), ctxt.runtime, |reparsed, _| {
         Ok(Value {
@@ -364,7 +379,35 @@ fn call_read(
         ]);
     };
 
-    let data = data::parse(&content, ctxt.src_line, ctxt.runtime)?;
+    Ok(Value {
+        kind: ValueKind::Data(Data::new(Some(content), ctxt.runtime)),
+    })
+}
+
+fn call_table(
+    input: Option<ValueKind>,
+    mut args: Vec<Option<ValueKind>>,
+    _: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = input.unwrap().expect_data();
+
+    // TODO should check the separator strings are a single character and error if not
+    let row = args
+        .pop()
+        .unwrap()
+        .map(|v| v.expect_string().chars().next().unwrap())
+        .unwrap_or('\n');
+    let col = args
+        .pop()
+        .unwrap()
+        .unwrap()
+        .expect_string()
+        .chars()
+        .next()
+        .unwrap();
+
+    data.force_tabular(row, (vec![col], 0), ctxt);
     Ok(Value {
         kind: ValueKind::Data(data),
     })
@@ -466,12 +509,9 @@ impl Node<Expr> {
             Expr::String(s) => Ok(Value {
                 kind: ValueKind::String(s),
             }),
-            Expr::Blob(b) => {
-                let data = data::parse(&b, ctxt.src_line, ctxt.runtime)?;
-                Ok(Value {
-                    kind: ValueKind::Data(data),
-                })
-            }
+            Expr::Blob(b) => Ok(Value {
+                kind: ValueKind::Data(Data::new(Some(b), ctxt.runtime)),
+            }),
             Expr::Pipe(lhs, actions) => eval_pipe(lhs, actions, ctxt, self.location),
             Expr::Action(action) => match action {
                 Action::Call(name, args) => {
@@ -531,7 +571,9 @@ fn eval_projection(
             return Err(vec![ctxt.make_err("Cannot project over a number", loc)]);
         }
         ValueKind::Error => return Ok(Value::new(ValueKind::Error)),
+        ValueKind::None => return Ok(lhs),
     };
+    data.resolve_structural(ctxt.runtime);
 
     if selector.inner == Selector::All {
         return Ok(Value::new(ValueKind::Data(data)));
@@ -542,10 +584,11 @@ fn eval_projection(
         project_node(reparsed, &selector, toks, ctxt)
     })?;
     if tokens.is_empty() {
-        return Ok(Value::new(ValueKind::Data(data::Data::None)));
+        return Ok(Value::new(ValueKind::None));
     }
     let eof = Token::following_eof(tokens.last().unwrap());
-    let data = crate::data::parse_tokens(tokens.into_iter().chain(Some(eof)), ctxt.runtime)?;
+    let data = Data::new(None, ctxt.runtime);
+    data.resolve_structural_from_tokens(tokens.into_iter().chain(Some(eof)), ctxt.runtime);
     Ok(Value::new(ValueKind::Data(data)))
 }
 
@@ -709,7 +752,7 @@ mod test {
                 assert_eq!(args[1].as_ref().unwrap().expect_str(), "b");
                 assert!(args[2].is_none());
 
-                assert_eq!(input.to_string(), "foo");
+                assert_eq!(input.raw.as_deref().unwrap(), "foo");
             }));
         }
         rt.exec_cmd("> test(a = 'a', b = 'b')", 1);
@@ -722,7 +765,7 @@ mod test {
                 assert_eq!(args[1].as_ref().unwrap().expect_str(), "b");
                 assert_eq!(args[2].as_ref().unwrap().expect_str(), "c");
 
-                assert_eq!(input.to_string(), "foo");
+                assert_eq!(input.raw.as_deref().unwrap(), "foo");
             }));
         }
         rt.exec_cmd("^(a = 'd', c = 'c')", 2);
@@ -765,7 +808,7 @@ Command {
 
         // Out of bounds selector
         let result = eval_project(&data, Selector::Int(2), &mut ctxt);
-        assert_eq!(result.kind.expect_data(), crate::data::Data::None);
+        std::assert_matches::assert_matches!(result.kind, ValueKind::None);
 
         // In bounds selector
         let result = eval_project(&data, Selector::Int(1), &mut ctxt);
@@ -813,7 +856,14 @@ Command {
             &mut ctxt,
         );
         let result = result.kind.expect_data();
-        assert!(result.eq_reloc(&data), "Not equal:\n{}\n\n{}", result, data);
+        runtime.with_meta_datas(&[result.meta, data.meta], |meta| {
+            assert!(
+                meta[0].eq_reloc(&meta[1]),
+                "Not equal:\n{}\n\n{}",
+                &meta[0],
+                &meta[1]
+            );
+        });
     }
 
     #[test]
@@ -1078,8 +1128,10 @@ Command {
     }
 
     #[track_caller]
-    fn init<'a>(code: &str, runtime: &'a crate::Runtime) -> (Context<'a>, crate::Data) {
-        let data = crate::data::parse(code, 0, &runtime).unwrap();
+    fn init<'a>(code: &str, runtime: &'a crate::Runtime) -> (Context<'a>, Data) {
+        let data = Data::new(Some(code.to_owned()), runtime);
+        data.resolve_structural(runtime);
+
         let ctxt = Context {
             runtime,
             src_line: 0,
@@ -1102,14 +1154,16 @@ Command {
 
     #[track_caller]
     fn assert_eq_reloc(result: Value, expected: &str, runtime: &crate::Runtime) {
-        let data1 = crate::data::parse(expected, 0, runtime).unwrap();
+        let data1 = crate::data::parse_structural(expected).unwrap().unwrap();
 
         let result = result.kind.expect_data();
-        assert!(
-            result.eq_reloc(&data1),
-            "Not equal:\n`{}`\n\n`{}`",
-            result,
-            data1
-        );
+        runtime.with_meta_data(result.meta, |meta| {
+            assert!(
+                meta.eq_reloc(&data::MetaData::Struct(data1.clone())),
+                "Not equal:\n{}\n\n{}",
+                meta,
+                data::MetaData::Struct(data1)
+            );
+        });
     }
 }

@@ -216,8 +216,6 @@ kind: Echo(
 ),
 line: 0,
 }"#;
-        let result = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
-        eprintln!("{result}");
-        result.unwrap_structural();
+        crate::data::parse_structural(text).unwrap().unwrap();
     }
 }

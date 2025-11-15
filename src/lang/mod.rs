@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::LazyLock};
 
+pub use exec::Context as ExecContext;
 pub use lex::Token;
 pub use parse::Command;
 
@@ -18,15 +19,15 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 
 // TODO tasks/requirements
 //
+// diff function to compare data
+// np? map `lexpr >> pexpr` e.g., `$0 >> .kind` (should we even need syntax for this rather than just a pipe?)
+// flatten?
+// dbg should generate data (requires returning multiple values - could use sequence data, in which case need array access)
 // project
 //  - docs
 //  - test on data with different structures
 //  - how deeply do we need to reparse? (TODO in eval_projection)
 //  - selectors with mix of numbers and idents
-// diff function to compare data
-// np? map `lexpr >> pexpr` e.g., `$0 >> .kind` (should we even need syntax for this rather than just a pipe?)
-// flatten?
-// dbg should generate data (requires returning multiple values - could use sequence data, in which case need array access)
 // search/select
 // reapply in pipe, e.g., `$a > fmt()`; `$b > ^(depth=2)`
 
@@ -90,18 +91,20 @@ pub fn run_cmd(cmd: Command, runtime: &mut crate::Runtime) -> ExecResult {
     };
     match cmd.kind {
         parse::CmdKind::Assign(name, expr) => {
-            let value = match expr.exec(&mut ctxt) {
+            let mut value = match expr.exec(&mut ctxt) {
                 Ok(v) => v,
                 Err(e) => return ExecResult::Error(e),
             };
+            value.resolve(ctxt.runtime);
             let name = runtime.save_variable(name.map(|n| n.inner), value);
             ExecResult::Variable(name)
         }
         parse::CmdKind::Echo(expr) => {
-            let value = match expr.exec(&mut ctxt) {
+            let mut value = match expr.exec(&mut ctxt) {
                 Ok(v) => v,
                 Err(e) => return ExecResult::Error(e),
             };
+            value.resolve(ctxt.runtime);
             ExecResult::Echo(value)
         }
         parse::CmdKind::Error(_) => unreachable!(),

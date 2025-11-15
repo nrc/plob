@@ -269,9 +269,11 @@ Command {
   kind: Echo (Var ("foo\n",),),
   line: 0,
 }"#;
-        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
-        let (toks, node) = parsed.unwrap_structural();
-        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default(), &toks);
+        let parsed = crate::data::parse_structural(text).unwrap().unwrap();
+        let formatted = parsed
+            .parsed
+            .kind
+            .render(0, 80, 0, &FmtOptions::default(), &parsed.tokens);
         assert_eq!(
             formatted, text,
             "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"
@@ -293,9 +295,11 @@ Command {
   }
 }"#;
 
-        let parsed = crate::data::parse(text, 0, &crate::Runtime::new_test()).unwrap();
-        let (toks, node) = parsed.unwrap_structural();
-        let formatted = node.kind.render(0, 80, 0, &FmtOptions::default(), &toks);
+        let parsed = crate::data::parse_structural(text).unwrap().unwrap();
+        let formatted = parsed
+            .parsed
+            .kind
+            .render(0, 80, 0, &FmtOptions::default(), &parsed.tokens);
         assert_eq!(
             formatted, text,
             "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"

@@ -8,7 +8,7 @@ pub mod tui;
 
 use std::{any::Any, cell::RefCell, collections::HashMap, fmt};
 
-use data::Data;
+use data::{Data, MetaData};
 use lang::ExecResult;
 
 #[derive(Debug)]
@@ -17,6 +17,7 @@ pub struct Runtime {
     history: Vec<(String, ExecResult)>,
     out: Box<dyn Report>,
 
+    // Could be a Vec rather than a HashMap
     metadata: RefCell<HashMap<usize, MetaData>>,
 }
 
@@ -53,7 +54,11 @@ impl Runtime {
                     return;
                 }
                 ExecResult::Echo(value) => {
-                    self.out.echo(&format!("{}: {value}", self.history.len()));
+                    self.out.echo(&format!(
+                        "{}: {}",
+                        self.history.len(),
+                        ValueDisplay(value, self)
+                    ));
                 }
                 ExecResult::Variable(name) => {
                     self.out.echo(&format!("{}: ${name}", self.history.len()));
@@ -99,8 +104,21 @@ impl Runtime {
 
     fn init_meta_data(&self) -> usize {
         let id = self.metadata.borrow().len();
-        self.metadata.borrow_mut().insert(id, MetaData::default());
+        self.metadata.borrow_mut().insert(id, MetaData::None);
         id
+    }
+
+    fn with_meta_data<T>(&self, index: usize, f: impl FnOnce(&mut MetaData) -> T) -> T {
+        let mut metas = self.metadata.borrow_mut();
+        let metadata = metas.get_mut(&index).unwrap();
+        f(metadata)
+    }
+
+    #[cfg(test)]
+    fn with_meta_datas<T>(&self, indicies: &[usize], f: impl FnOnce(&[&MetaData]) -> T) -> T {
+        let metas = self.metadata.borrow_mut();
+        let metadata: Vec<&MetaData> = indicies.iter().map(|i| metas.get(&i).unwrap()).collect();
+        f(&metadata)
     }
 
     fn help_message<'a>(&self, mut args: impl Iterator<Item = &'a str>) -> String {
@@ -131,6 +149,13 @@ impl Value {
         Value { kind }
     }
 
+    fn resolve(&mut self, runtime: &Runtime) {
+        match &mut self.kind {
+            ValueKind::Data(d) => d.resolve_structural(runtime),
+            _ => {}
+        }
+    }
+
     fn coerce_to(self, ty: &ValueType) -> Result<Value, Value> {
         use ValueKind::*;
         match (self.kind, ty) {
@@ -146,14 +171,25 @@ impl Value {
     }
 
     fn ty(&self) -> ValueType {
-        use ValueKind::*;
+        self.kind.ty()
+    }
+
+    pub fn fmt(&self, w: &mut impl fmt::Write, runtime: &crate::Runtime) -> fmt::Result {
         match &self.kind {
-            Data(_) => ValueType::Data,
-            String(_) => ValueType::String,
-            Number(n) if *n >= 0 => ValueType::Number(NumberKind::UInt),
-            Number(_) => ValueType::Number(NumberKind::Int),
-            Error => ValueType::Error,
+            ValueKind::Data(data) => data.fmt(w, &data::FmtOptions::default(), runtime),
+            ValueKind::String(s) => w.write_str(s),
+            ValueKind::Number(n) => write!(w, "{n}"),
+            ValueKind::Error => write!(w, "ERROR"),
+            ValueKind::None => Ok(()),
         }
+    }
+}
+
+struct ValueDisplay<'a>(&'a Value, &'a Runtime);
+
+impl<'a> fmt::Display for ValueDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f, self.1)
     }
 }
 
@@ -162,6 +198,7 @@ pub enum ValueKind {
     Data(Data),
     String(String),
     Number(i64),
+    None,
     Error,
 }
 
@@ -191,6 +228,18 @@ impl ValueKind {
         }
     }
 
+    fn ty(&self) -> ValueType {
+        use ValueKind::*;
+        match &self {
+            Data(_) => ValueType::Data,
+            String(_) => ValueType::String,
+            Number(n) if *n >= 0 => ValueType::Number(NumberKind::UInt),
+            Number(_) => ValueType::Number(NumberKind::Int),
+            None => ValueType::Any,
+            Error => ValueType::Error,
+        }
+    }
+
     // #[track_caller]
     // fn expect_int(&self) -> i64 {
     //     match self {
@@ -210,7 +259,6 @@ impl ValueKind {
 
 #[derive(Clone, Debug)]
 enum ValueType {
-    #[allow(dead_code)]
     Any,
     Data,
     String,
@@ -224,28 +272,6 @@ enum NumberKind {
     UInt,
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            ValueKind::Data(data) => fmt::Display::fmt(data, f),
-            ValueKind::String(s) => s.fmt(f),
-            ValueKind::Number(n) => n.fmt(f),
-            ValueKind::Error => write!(f, "ERROR"),
-        }
-    }
-}
-
-impl fmt::Display for ValueKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ValueKind::Data(d) => write!(f, "data({})", d.ty()),
-            ValueKind::String(_) => write!(f, "string"),
-            ValueKind::Number(_) => write!(f, "number"),
-            ValueKind::Error => write!(f, "error"),
-        }
-    }
-}
-
 impl fmt::Display for ValueType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -255,21 +281,6 @@ impl fmt::Display for ValueType {
             ValueType::Number(NumberKind::Int) => write!(f, "integer"),
             ValueType::Number(NumberKind::UInt) => write!(f, "postiive integer"),
             ValueType::Error => write!(f, "error"),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct MetaData {
-    reparsed: data::reparse::Node,
-    reparse_depth: Option<usize>,
-}
-
-impl Default for MetaData {
-    fn default() -> Self {
-        MetaData {
-            reparsed: data::reparse::Node::Todo,
-            reparse_depth: Some(0),
         }
     }
 }
