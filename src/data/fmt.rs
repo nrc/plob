@@ -10,9 +10,19 @@ const FMT_MAX_WIDTH: usize = 100;
 const FMT_TAB: &str = "  ";
 const FMT_TAB_WIDTH: usize = FMT_TAB.len();
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FmtOptions {
     pub depth: Option<usize>,
+    pub truncate: bool,
+}
+
+impl Default for FmtOptions {
+    fn default() -> Self {
+        Self {
+            depth: None,
+            truncate: true,
+        }
+    }
 }
 
 impl Node {

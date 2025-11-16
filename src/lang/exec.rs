@@ -72,7 +72,7 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
         Function::new(
             "fmt",
             Some(ValueType::Data),
-            vec![("depth", ValueType::Number(NumberKind::UInt), true)],
+            vec![("depth", ValueType::Number(NumberKind::UInt), true), ("width", ValueType::Number(NumberKind::UInt), true)],
             "data > fmt(depth?: int >= 0) > string",
             "formats data",
             &call_fmt,
@@ -301,11 +301,18 @@ fn call_fmt(
 ) -> Result<Value, Vec<Error>> {
     let data = lhs.unwrap().expect_data();
     data.resolve_structural(ctxt.runtime);
+    let width = args.pop().unwrap();
     let depth = args.pop().unwrap();
 
     let mut opts = data::FmtOptions::default();
     if let Some(depth) = depth {
         opts.depth = Some(depth.expect_uint() as usize);
+    }
+    // TODO support non-0 widths (0 means don't truncate).
+    if let Some(width) = width
+        && width.expect_uint() == 0
+    {
+        opts.truncate = false;
     }
 
     let mut buf = String::new();

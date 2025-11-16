@@ -219,14 +219,32 @@ pub struct TabularMetaData {
 
 impl TabularMetaData {
     // TODO add options for truncation, row numbers
-    fn fmt(&self, w: &mut impl sfmt::Write, _opts: &FmtOptions) -> sfmt::Result {
+    fn fmt(&self, w: &mut impl sfmt::Write, opts: &FmtOptions) -> sfmt::Result {
+        let widths = if opts.truncate {
+            Vec::new()
+        } else {
+            let mut result = Vec::new();
+            for r in &self.data {
+                for (i, c) in r.iter().enumerate() {
+                    if i == result.len() {
+                        result.push(0);
+                    }
+                    result[i] = std::cmp::max(result[i], c.len());
+                }
+            }
+            result
+        };
         let sep = format!(" {} ", self.col_sep.0[0]);
         for (i, row) in self.data.iter().enumerate() {
             w.write_char('\n')?;
             write!(w, "{i:4}")?;
-            for a in row {
+            for (c, a) in row.iter().enumerate() {
                 w.write_str(&sep)?;
-                write_truncated(w, a, 10)?;
+                if opts.truncate {
+                    write_truncated(w, a, 10)?;
+                } else {
+                    write!(w, "{a:0$}", widths[c])?;
+                }
             }
         }
         Ok(())
