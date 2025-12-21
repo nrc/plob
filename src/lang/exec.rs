@@ -110,6 +110,14 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
             &call_table,
         ),
         Function::new(
+            "transpose",
+            Some(ValueType::Data),
+            vec![],
+            "data > transpose() > data",
+            "swap the rows and columns of a table",
+            &call_transpose,
+        ),
+        Function::new(
             "dbg",
             Some(ValueType::Data),
             vec![],
@@ -415,6 +423,31 @@ fn call_table(
         .unwrap();
 
     data.force_tabular(row, (vec![col], 0), ctxt);
+    Ok(Value {
+        kind: ValueKind::Data(data),
+    })
+}
+
+fn call_transpose(
+    input: Option<ValueKind>,
+    _args: Vec<Option<ValueKind>>,
+    loc: NodeLoc,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
+    let data = input.unwrap().expect_data();
+    let Some(result) = data.with_tabular(ctxt.runtime, |data| data.transpose()) else {
+        return Err(vec![ctxt.make_err(
+            format!("expected tabular data, found: {}", data.ty(ctxt.runtime)),
+            loc,
+        )]);
+    };
+
+    let data = Data::new(None, ctxt.runtime);
+    data.with_tabular(ctxt.runtime, move |data| {
+        *data = result;
+    })
+    .unwrap();
+
     Ok(Value {
         kind: ValueKind::Data(data),
     })

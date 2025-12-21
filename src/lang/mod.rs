@@ -18,7 +18,8 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 }
 
 // TODO tasks/requirements
-//
+// table functions: projection, selection, split col/row, insert col/row, apply complex layout
+// more precise types for different kinds of data
 // diff function to compare data
 // np? map `lexpr >> pexpr` e.g., `$0 >> .kind` (should we even need syntax for this rather than just a pipe?)
 // flatten?

@@ -24,10 +24,16 @@ fn delimiters_match(open: char, close: char) -> bool {
 
 pub fn parse_tabular(input: &str, row_sep: char, col_sep: (Vec<char>, usize)) -> TabularMetaData {
     // TODO splitting columns by whitespace
-    let data: Vec<Vec<_>> = input
+    let mut data: Vec<Vec<_>> = input
         .split(row_sep)
         .map(|r| r.split(&*col_sep.0).map(|s| s.trim().to_owned()).collect())
         .collect();
+
+    // Ensure all rows have the same length.
+    if let Some(max_len) = data.iter().map(Vec::len).max() {
+        data.iter_mut()
+            .for_each(|r| r.extend((r.len()..max_len).map(|_| String::new())));
+    }
 
     TabularMetaData {
         row_sep,
@@ -71,6 +77,10 @@ impl Data {
         }
     }
 
+    pub fn ty(&self, runtime: &crate::Runtime) -> String {
+        runtime.with_meta_data(self.meta, |metadata| metadata.ty())
+    }
+
     pub fn fmt(
         &self,
         w: &mut impl sfmt::Write,
@@ -94,7 +104,7 @@ impl Data {
     pub fn with_tabular<T>(
         &self,
         runtime: &crate::Runtime,
-        f: impl Fn(&TabularMetaData) -> T,
+        f: impl FnOnce(&mut TabularMetaData) -> T,
     ) -> Option<T> {
         runtime.with_meta_data(self.meta, |metadata| match metadata {
             MetaData::Tabular(tmd) => Some(f(tmd)),
@@ -209,11 +219,11 @@ impl StructMetaData {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TabularMetaData {
-    #[expect(unused)]
     row_sep: char,
     col_sep: (Vec<char>, usize),
+    /// Invariant: all rows must have the same length.
     data: Vec<Vec<String>>,
 }
 
@@ -249,6 +259,26 @@ impl TabularMetaData {
         }
         Ok(())
     }
+
+    pub fn transpose(&self) -> TabularMetaData {
+        if self.data.is_empty() {
+            return self.clone();
+        }
+
+        let col_len = self.data[0].len();
+        let mut data = vec![Vec::new(); col_len];
+        for (i, row) in data.iter_mut().enumerate() {
+            for col in &self.data {
+                row.push(col[i].clone());
+            }
+        }
+
+        TabularMetaData {
+            row_sep: self.row_sep,
+            col_sep: self.col_sep.clone(),
+            data,
+        }
+    }
 }
 
 fn write_truncated(w: &mut impl sfmt::Write, s: &str, len: usize) -> sfmt::Result {
@@ -262,4 +292,72 @@ fn write_truncated(w: &mut impl sfmt::Write, s: &str, len: usize) -> sfmt::Resul
         .take(len - 2)
         .for_each(|c| w.write_char(c).unwrap());
     w.write_str("..")
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_transpose() {
+        // Empty
+        let empty = TabularMetaData {
+            row_sep: '\n',
+            col_sep: (Vec::new(), 42),
+            data: Vec::new(),
+        };
+        let transposed = empty.transpose();
+        let twice = transposed.transpose();
+        assert!(transposed.data.is_empty());
+        assert_eq!(empty, twice);
+
+        // Empty rows
+        let empty_rows = TabularMetaData {
+            row_sep: '\n',
+            col_sep: (Vec::new(), 42),
+            data: vec![Vec::new(); 3],
+        };
+        let transposed = empty_rows.transpose();
+        let twice = transposed.transpose();
+        assert!(transposed.data.is_empty());
+        assert_eq!(empty, twice);
+
+        // Non-empty
+        let non_empty = TabularMetaData {
+            row_sep: '\n',
+            col_sep: (Vec::new(), 42),
+            data: vec![
+                vec![
+                    "a1".to_owned(),
+                    "b1".to_owned(),
+                    "c1".to_owned(),
+                    "d1".to_owned(),
+                ],
+                vec![
+                    "a2".to_owned(),
+                    "b2".to_owned(),
+                    "c2".to_owned(),
+                    "d2".to_owned(),
+                ],
+                vec![
+                    "a3".to_owned(),
+                    "b3".to_owned(),
+                    "c3".to_owned(),
+                    "d3".to_owned(),
+                ],
+            ],
+        };
+        let transposed = non_empty.transpose();
+        let twice = transposed.transpose();
+        assert_eq!(
+            transposed.data,
+            [
+                ["a1".to_owned(), "a2".to_owned(), "a3".to_owned()],
+                ["b1".to_owned(), "b2".to_owned(), "b3".to_owned()],
+                ["c1".to_owned(), "c2".to_owned(), "c3".to_owned()],
+                ["d1".to_owned(), "d2".to_owned(), "d3".to_owned()],
+            ]
+        );
+        assert_eq!(non_empty, twice);
+    }
 }
