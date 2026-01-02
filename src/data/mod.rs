@@ -228,7 +228,6 @@ pub struct TabularMetaData {
 }
 
 impl TabularMetaData {
-    // TODO add option for row numbers
     fn fmt(&self, w: &mut impl sfmt::Write, opts: &FmtOptions) -> sfmt::Result {
         let widths = if opts.truncate.is_some() {
             Vec::new()
@@ -247,9 +246,14 @@ impl TabularMetaData {
         let sep = format!(" {} ", self.col_sep.0[0]);
         for (i, row) in self.data.iter().enumerate() {
             w.write_char('\n')?;
-            write!(w, "{i:4}")?;
-            for (c, a) in row.iter().enumerate() {
+            if opts.row_numbers {
+                write!(w, "{i:4}")?;
                 w.write_str(&sep)?;
+            }
+            for (c, a) in row.iter().enumerate() {
+                if c > 0 {
+                    w.write_str(&sep)?;
+                }
                 if let Some(width) = opts.truncate {
                     write_truncated(w, a, width)?;
                 } else {

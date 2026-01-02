@@ -72,8 +72,12 @@ static FUNCTIONS: LazyLock<HashMap<&str, Function>> = LazyLock::new(|| {
         Function::new(
             "fmt",
             Some(ValueType::Data),
-            vec![("depth", ValueType::Number(NumberKind::UInt), true), ("width", ValueType::Number(NumberKind::UInt), true)],
-            "data > fmt(depth?: int >= 0, width?: int >= 0) > string",
+            vec![
+                ("depth", ValueType::Number(NumberKind::UInt), true),
+                ("width", ValueType::Number(NumberKind::UInt), true),
+                ("row_numbers", ValueType::Bool, true),
+            ],
+            "data > fmt(depth?: int >= 0, width?: int >= 0, row_numbers?: bool) > string",
             "formats data",
             &call_fmt,
         ),
@@ -195,6 +199,7 @@ impl Function {
                 (ValueType::String, k @ ValueKind::String(_)) => Ok(Some(k)),
                 (ValueType::Number(NumberKind::Int), k @ ValueKind::Number(_)) => Ok(Some(k)),
                 (ValueType::Number(NumberKind::UInt), k @ ValueKind::Number(_)) => Ok(Some(k)),
+                (ValueType::Bool, k @ ValueKind::Bool(_)) => Ok(Some(k)),
                 (ty, k) => Err(vec![ctxt.make_err(
                     format!(
                         "`{}` expected {ty} as input, found: `{}`",
@@ -310,6 +315,7 @@ fn call_fmt(
     let data = lhs.unwrap().expect_data();
     data.resolve_structural(ctxt.runtime);
 
+    let row_numbers = args.pop().unwrap();
     let width = args.pop().unwrap();
     let depth = args.pop().unwrap();
 
@@ -325,6 +331,10 @@ fn call_fmt(
         } else {
             opts.truncate = Some(width as usize);
         }
+    }
+
+    if let Some(row_numbers) = row_numbers {
+        opts.row_numbers = row_numbers.expect_bool();
     }
 
     let mut buf = String::new();
@@ -613,6 +623,9 @@ fn eval_projection(
         }
         ValueKind::Number(_) => {
             return Err(vec![ctxt.make_err("Cannot project over a number", loc)]);
+        }
+        ValueKind::Bool(_) => {
+            return Err(vec![ctxt.make_err("Cannot project over a boolean", loc)]);
         }
         ValueKind::Error => return Ok(Value::new(ValueKind::Error)),
         ValueKind::None => return Ok(lhs),

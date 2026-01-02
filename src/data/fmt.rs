@@ -15,6 +15,7 @@ const DEFAULT_TAB_WIDTH: usize = DEFAULT_TAB.len();
 pub struct FmtOptions {
     pub depth: Option<usize>,
     pub truncate: Option<usize>,
+    pub row_numbers: bool,
 }
 
 impl Default for FmtOptions {
@@ -22,6 +23,7 @@ impl Default for FmtOptions {
         Self {
             depth: None,
             truncate: Some(DEFAULT_TRUNCATE_WIDTH),
+            row_numbers: true,
         }
     }
 }
@@ -367,6 +369,7 @@ Command {
         let opts = FmtOptions {
             depth: None,
             truncate: None,
+            row_numbers: true,
         };
         tabular.fmt(&mut buf, &opts).unwrap();
 
@@ -398,12 +401,109 @@ Command {
         let opts = FmtOptions {
             depth: None,
             truncate: Some(5),
+            row_numbers: true,
         };
         tabular.fmt(&mut buf, &opts).unwrap();
 
         let expected = r#"
    0 , short , ver.. , x    
    1 , a     , b     , c    "#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_default_no_row_numbers() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        let opts = FmtOptions {
+            depth: None,
+            truncate: Some(DEFAULT_TRUNCATE_WIDTH),
+            row_numbers: false,
+        };
+        tabular.fmt(&mut buf, &opts).unwrap();
+
+        let expected = r#"
+short      , verylong.. , x         
+a          , b          , c         "#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_none_no_row_numbers() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        let opts = FmtOptions {
+            depth: None,
+            truncate: None,
+            row_numbers: false,
+        };
+        tabular.fmt(&mut buf, &opts).unwrap();
+
+        let expected = r#"
+short , verylongvalue , x
+a     , b             , c"#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_custom_no_row_numbers() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        let opts = FmtOptions {
+            depth: None,
+            truncate: Some(5),
+            row_numbers: false,
+        };
+        tabular.fmt(&mut buf, &opts).unwrap();
+
+        let expected = r#"
+short , ver.. , x    
+a     , b     , c    "#;
         assert_eq!(
             buf, expected,
             "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"

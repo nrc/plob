@@ -32,6 +32,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 //  - selectors with mix of numbers and idents
 // search/select (extend range syntax to expressions)
 // reapply in pipe, e.g., `$a > fmt()`; `$b > ^(depth=2)`
+// function calls: revisit rules around named/unnamed args
 
 /// # Grammar
 ///

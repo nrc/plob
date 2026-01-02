@@ -165,6 +165,7 @@ impl Value {
             (kind @ String(_), ValueType::String) => Ok(Value { kind }),
             (kind @ Number(_), ValueType::Number(NumberKind::Int)) => Ok(Value { kind }),
             (kind @ Number(n), ValueType::Number(NumberKind::UInt)) if n >= 0 => Ok(Value { kind }),
+            (kind @ Bool(_), ValueType::Bool) => Ok(Value { kind }),
 
             (kind, _) => Err(Value { kind }),
         }
@@ -179,6 +180,7 @@ impl Value {
             ValueKind::Data(data) => data.fmt(w, &data::FmtOptions::default(), runtime),
             ValueKind::String(s) => w.write_str(s),
             ValueKind::Number(n) => write!(w, "{n}"),
+            ValueKind::Bool(b) => write!(w, "{b}"),
             ValueKind::Error => write!(w, "ERROR"),
             ValueKind::None => Ok(()),
         }
@@ -198,6 +200,7 @@ pub enum ValueKind {
     Data(Data),
     String(String),
     Number(i64),
+    Bool(bool),
     None,
     Error,
 }
@@ -235,6 +238,7 @@ impl ValueKind {
             String(_) => ValueType::String,
             Number(n) if *n >= 0 => ValueType::Number(NumberKind::UInt),
             Number(_) => ValueType::Number(NumberKind::Int),
+            Bool(_) => ValueType::Bool,
             None => ValueType::Any,
             Error => ValueType::Error,
         }
@@ -255,6 +259,14 @@ impl ValueKind {
             _ => unreachable!(),
         }
     }
+
+    #[track_caller]
+    fn expect_bool(&self) -> bool {
+        match self {
+            ValueKind::Bool(b) => *b,
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -263,6 +275,7 @@ enum ValueType {
     Data,
     String,
     Number(NumberKind),
+    Bool,
     Error,
 }
 
@@ -280,6 +293,7 @@ impl fmt::Display for ValueType {
             ValueType::String => write!(f, "string"),
             ValueType::Number(NumberKind::Int) => write!(f, "integer"),
             ValueType::Number(NumberKind::UInt) => write!(f, "postiive integer"),
+            ValueType::Bool => write!(f, "boolean"),
             ValueType::Error => write!(f, "error"),
         }
     }
