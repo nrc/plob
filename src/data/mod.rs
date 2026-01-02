@@ -228,9 +228,9 @@ pub struct TabularMetaData {
 }
 
 impl TabularMetaData {
-    // TODO add options for truncation, row numbers
+    // TODO add option for row numbers
     fn fmt(&self, w: &mut impl sfmt::Write, opts: &FmtOptions) -> sfmt::Result {
-        let widths = if opts.truncate {
+        let widths = if opts.truncate.is_some() {
             Vec::new()
         } else {
             let mut result = Vec::new();
@@ -250,8 +250,8 @@ impl TabularMetaData {
             write!(w, "{i:4}")?;
             for (c, a) in row.iter().enumerate() {
                 w.write_str(&sep)?;
-                if opts.truncate {
-                    write_truncated(w, a, 10)?;
+                if let Some(width) = opts.truncate {
+                    write_truncated(w, a, width)?;
                 } else {
                     write!(w, "{a:0$}", widths[c])?;
                 }

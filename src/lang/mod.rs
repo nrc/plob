@@ -18,7 +18,8 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 }
 
 // TODO tasks/requirements
-// table functions: projection, selection, split col/row, insert col/row, apply complex layout
+// table functions: projection, selection (should work for lists too), split col/row, insert col/row, apply complex layout
+// convert struct data to tabular data
 // more precise types for different kinds of data
 // diff function to compare data
 // np? map `lexpr >> pexpr` e.g., `$0 >> .kind` (should we even need syntax for this rather than just a pipe?)
@@ -29,21 +30,24 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 //  - test on data with different structures
 //  - how deeply do we need to reparse? (TODO in eval_projection)
 //  - selectors with mix of numbers and idents
-// search/select
+// search/select (extend range syntax to expressions)
 // reapply in pipe, e.g., `$a > fmt()`; `$b > ^(depth=2)`
 
 /// # Grammar
 ///
 /// cmd ::= assign | expr
 /// assign ::= var? `=` expr
-/// expr ::= var | hist_var | reapply | literal | lexpr project | pipe | repipe | call
+/// expr ::= var | hist_var | reapply | literal | lexpr project | lexpr select | pipe | repipe | call
 /// pipe ::= lexpr? (`>` `>`? pexpr)+
 /// lexpr ::= var | hist_var | `(` expr `)`
-/// pexpr ::= project | call | `where` pexpr
+/// pexpr ::= project | select | call
 /// repipe ::= var? (`<` `<`? rexpr)+  // replay
 /// rexpr ::= hist_var,+ | pexpr
 /// project ::= (`.` selector)+
-/// selector ::= int | ident | string | `(` selector,* `)` | `*`
+/// select ::= `[` (range_selector `,`)+ `]`
+/// selector ::= single_selector | `(` single_selector,* `)` | `*`
+/// single_selector ::= int | ident | string
+/// range_selector ::= single_selector | single_selector? `..` single_selector?
 /// call ::= ident `(` (ident = expr),* `)`
 /// reapply ::= hist_var `(` (ident = expr),* `)`
 /// var ::= `$` ident

@@ -6,28 +6,33 @@ use crate::data::{
     parse::{Node, NodeKind},
 };
 
-const FMT_MAX_WIDTH: usize = 100;
-const FMT_TAB: &str = "  ";
-const FMT_TAB_WIDTH: usize = FMT_TAB.len();
+const DEFAULT_MAX_WIDTH: usize = 100;
+const DEFAULT_TRUNCATE_WIDTH: usize = 10;
+const DEFAULT_TAB: &str = "  ";
+const DEFAULT_TAB_WIDTH: usize = DEFAULT_TAB.len();
 
 #[derive(Clone, Debug)]
 pub struct FmtOptions {
     pub depth: Option<usize>,
-    pub truncate: bool,
+    pub truncate: Option<usize>,
 }
 
 impl Default for FmtOptions {
     fn default() -> Self {
         Self {
             depth: None,
-            truncate: true,
+            truncate: Some(DEFAULT_TRUNCATE_WIDTH),
         }
     }
 }
 
 impl Node {
     pub fn fmt(&self, w: &mut impl Write, opts: &FmtOptions, toks: &[Token]) -> std::fmt::Result {
-        write!(w, "{}", self.kind.render(0, FMT_MAX_WIDTH, 0, opts, toks))
+        write!(
+            w,
+            "{}",
+            self.kind.render(0, DEFAULT_MAX_WIDTH, 0, opts, toks)
+        )
     }
 
     fn next_char(&self, toks: &[Token]) -> char {
@@ -164,8 +169,8 @@ impl NodeKind {
                     && !data::OPEN_DELIMS.contains(&prev)
                 {
                     result.push('\n');
-                    result.push_str(&FMT_TAB.repeat(indent - 1));
-                    available = FMT_MAX_WIDTH.saturating_sub((indent - 1) * FMT_TAB_WIDTH);
+                    result.push_str(&DEFAULT_TAB.repeat(indent - 1));
+                    available = DEFAULT_MAX_WIDTH.saturating_sub((indent - 1) * DEFAULT_TAB_WIDTH);
                 } else if (data::OPEN_DELIMS.contains(&prev) && !NEWLINE_CHARS.contains(&next))
                     || (NEWLINE_CHARS.contains(&prev) && !NEWLINE_CHARS.contains(&next))
                     || (available == 0
@@ -173,8 +178,8 @@ impl NodeKind {
                         && !NEWLINE_CHARS.contains(&next))
                 {
                     result.push('\n');
-                    result.push_str(&FMT_TAB.repeat(indent));
-                    available = FMT_MAX_WIDTH.saturating_sub(indent * FMT_TAB_WIDTH);
+                    result.push_str(&DEFAULT_TAB.repeat(indent));
+                    available = DEFAULT_MAX_WIDTH.saturating_sub(indent * DEFAULT_TAB_WIDTH);
                 } else if CharSpacing::should_space(prev, n, toks) {
                     result.push(' ');
                     available = available.saturating_sub(1);
@@ -313,6 +318,95 @@ Command {
         assert_eq!(
             formatted, text,
             "\nfound:```\n{formatted}\n```\nexpected:```\n{text}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_default() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        tabular.fmt(&mut buf, &FmtOptions::default()).unwrap();
+
+        let expected = r#"
+   0 , short      , verylong.. , x         
+   1 , a          , b          , c         "#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_none() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        let opts = FmtOptions {
+            depth: None,
+            truncate: None,
+        };
+        tabular.fmt(&mut buf, &opts).unwrap();
+
+        let expected = r#"
+   0 , short , verylongvalue , x
+   1 , a     , b             , c"#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
+        );
+    }
+
+    #[test]
+    fn fmt_tabular_with_truncate_custom() {
+        let tabular = crate::data::TabularMetaData {
+            row_sep: '\n',
+            col_sep: (vec![','], 0),
+            data: vec![
+                vec![
+                    "short".to_owned(),
+                    "verylongvalue".to_owned(),
+                    "x".to_owned(),
+                ],
+                vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            ],
+        };
+
+        let mut buf = String::new();
+        let opts = FmtOptions {
+            depth: None,
+            truncate: Some(5),
+        };
+        tabular.fmt(&mut buf, &opts).unwrap();
+
+        let expected = r#"
+   0 , short , ver.. , x    
+   1 , a     , b     , c    "#;
+        assert_eq!(
+            buf, expected,
+            "\nfound:```\n{buf}\n```\nexpected:```\n{expected}\n```"
         );
     }
 }
