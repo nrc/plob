@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 
 use crate::{
     Error, NumberKind, Value, ValueKind, ValueType,
-    data::{self, Data, Token, reparse::Node as RNode},
+    data::{self, Data, MetaData, TabularMetaData, Token, reparse::Node as RNode},
     lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, Selector},
 };
 
@@ -630,12 +630,27 @@ fn eval_projection(
         ValueKind::Error => return Ok(Value::new(ValueKind::Error)),
         ValueKind::None => return Ok(lhs),
     };
-    data.resolve_structural(ctxt.runtime);
 
     if selector.inner == Selector::All {
         return Ok(Value::new(ValueKind::Data(data)));
     }
 
+    match data.ty(ctxt.runtime) {
+        data::DataType::Struct | data::DataType::Unknown => {
+            data.resolve_structural(ctxt.runtime);
+            project_structural(data, selector, ctxt)
+        }
+        data::DataType::Tabular => project_tabular(data, selector, ctxt, loc),
+        data::DataType::Atom => Err(vec![ctxt.make_err("Cannot project over an atom", loc)]),
+        data::DataType::Sequence => Err(vec![ctxt.make_err("Cannot project over a sequence", loc)]),
+    }
+}
+
+fn project_structural(
+    data: Data,
+    selector: Node<Selector>,
+    ctxt: &mut Context,
+) -> Result<Value, Vec<Error>> {
     // TODO depth 2 or 3 or 4?
     let tokens = data::reparse::with_reparsed(&data, Some(4), ctxt.runtime, |reparsed, toks| {
         project_node(reparsed, &selector, toks, ctxt)
@@ -788,6 +803,59 @@ fn project_node(
         }
         _ => Ok(Vec::new()),
     }
+}
+
+fn project_tabular(
+    data: Data,
+    selector: Node<Selector>,
+    ctxt: &mut Context,
+    loc: NodeLoc,
+) -> Result<Value, Vec<Error>> {
+    // TODO accept column names as well as numbers
+    let Some(columns) = selector.numeric() else {
+        return Err(vec![ctxt.make_err(
+            "Tabular data can only be projected with column numbers",
+            loc,
+        )]);
+    };
+
+    let new_data = data
+        .with_tabular(ctxt.runtime, |data| {
+            let mut new_data =
+                TabularMetaData::with_capacity(data.data.len(), data.row_sep, data.col_sep.clone());
+
+            if data.data.is_empty() {
+                return Ok(MetaData::Tabular(new_data));
+            }
+
+            for c in &columns {
+                if *c < 0 || *c >= data.data[0].len() as i64 {
+                    return Err(vec![ctxt.make_err(
+                        format!(
+                            "Projection index out of bounds. Found: {}, expected: 0..{}",
+                            *c,
+                            data.data[0].len()
+                        ),
+                        loc,
+                    )]);
+                }
+            }
+
+            for r in &data.data {
+                let mut row = Vec::with_capacity(columns.len());
+                for c in &columns {
+                    row.push(r[*c as usize].clone());
+                }
+                new_data.data.push(row);
+            }
+
+            Ok(MetaData::Tabular(new_data))
+        })
+        .unwrap()?;
+
+    let data = Data::new(None, ctxt.runtime);
+    data.set_meta_data(new_data, ctxt.runtime);
+    Ok(Value::new(ValueKind::Data(data)))
 }
 
 #[cfg(test)]
@@ -1184,6 +1252,105 @@ Command {
         );
     }
 
+    #[test]
+    fn project_tabular_index() {
+        let runtime = &crate::Runtime::new_test();
+        let (mut ctxt, data) = init_tabular(
+            r#"a | b | c | d
+e | f | g | h
+i | j | k | l"#,
+            runtime,
+        );
+
+        // Selector::All
+        let result = eval_project(&data, Selector::All, &mut ctxt);
+        assert_eq!(result.kind.expect_data(), data);
+
+        // Out of bounds selector
+        let result = eval_projection(
+            Value::new(ValueKind::Data(data.clone())),
+            Node::new(Selector::Int(4), 0, 0),
+            &mut ctxt,
+            NodeLoc { char: 0, len: 0 },
+        );
+        assert!(result.is_err());
+
+        // In bounds selector
+        let result = eval_project(&data, Selector::Int(1), &mut ctxt);
+        assert_eq_tabular(
+            result, r#"b
+f
+j"#, runtime,
+        );
+
+        // Multiple selector, just one
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![Node::new(Selector::Int(1), 0, 0)]),
+            &mut ctxt,
+        );
+        assert_eq_tabular(
+            result, r#"b
+f
+j"#, runtime,
+        );
+
+        // Multiple selector
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Int(1), 0, 0),
+                Node::new(Selector::Int(3), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_tabular(
+            result,
+            r#"b | d
+f | h
+j | l"#,
+            runtime,
+        );
+
+        // Multiple selector, with reordering
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Int(3), 0, 0),
+                Node::new(Selector::Int(2), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        assert_eq_tabular(
+            result,
+            r#"d | c
+h | g
+l | k"#,
+            runtime,
+        );
+
+        // Multiple selector, all
+        let result = eval_project(
+            &data,
+            Selector::Seq(vec![
+                Node::new(Selector::Int(0), 0, 0),
+                Node::new(Selector::Int(1), 0, 0),
+                Node::new(Selector::Int(2), 0, 0),
+                Node::new(Selector::Int(3), 0, 0),
+            ]),
+            &mut ctxt,
+        );
+        let result = result.kind.expect_data();
+        runtime.with_meta_datas(&[result.meta, data.meta], |meta| {
+            assert!(
+                meta[0].eq_reloc(&meta[1]),
+                "Not equal:\n{}\n\n{}",
+                &meta[0],
+                &meta[1]
+            );
+        });
+    }
+
     #[track_caller]
     fn init<'a>(code: &str, runtime: &'a crate::Runtime) -> (Context<'a>, Data) {
         let data = Data::new(Some(code.to_owned()), runtime);
@@ -1194,6 +1361,20 @@ Command {
             src_line: 0,
             history_position: 0,
         };
+
+        (ctxt, data)
+    }
+
+    #[track_caller]
+    fn init_tabular<'a>(code: &str, runtime: &'a crate::Runtime) -> (Context<'a>, Data) {
+        let ctxt = Context {
+            runtime,
+            src_line: 0,
+            history_position: 0,
+        };
+
+        let data = Data::new(Some(code.to_owned()), runtime);
+        data.force_tabular('\n', (vec!['|'], 0), &ctxt);
 
         (ctxt, data)
     }
@@ -1220,6 +1401,21 @@ Command {
                 "Not equal:\n{}\n\n{}",
                 meta,
                 data::MetaData::Struct(data1)
+            );
+        });
+    }
+
+    #[track_caller]
+    fn assert_eq_tabular(result: Value, expected: &str, runtime: &crate::Runtime) {
+        let expected = crate::data::parse_tabular(expected, '\n', (vec!['|'], 0));
+
+        let result = result.kind.expect_data();
+        runtime.with_meta_data(result.meta, |meta| {
+            assert!(
+                meta.eq_reloc(&data::MetaData::Tabular(expected.clone())),
+                "Not equal:\n{}\n\n{}",
+                meta,
+                data::MetaData::Tabular(expected)
             );
         });
     }

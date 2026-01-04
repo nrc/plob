@@ -18,7 +18,7 @@ pub fn parse_script(text: &str) -> (Vec<Command>, Vec<crate::Error>) {
 }
 
 // TODO tasks/requirements
-// table functions: projection, selection (should work for lists too), split col/row, insert col/row, apply complex layout
+// table functions: projection (by named columns), selection (should work for lists too), split col/row, insert col/row, apply complex layout
 // convert struct data to tabular data
 // more precise types for different kinds of data
 // diff function to compare data

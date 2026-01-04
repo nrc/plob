@@ -77,7 +77,7 @@ impl Data {
         }
     }
 
-    pub fn ty(&self, runtime: &crate::Runtime) -> String {
+    pub fn ty(&self, runtime: &crate::Runtime) -> DataType {
         runtime.with_meta_data(self.meta, |metadata| metadata.ty())
     }
 
@@ -140,6 +140,10 @@ impl Data {
         })
     }
 
+    pub fn set_meta_data(&self, new_meta_data: MetaData, runtime: &crate::Runtime) {
+        runtime.with_meta_data(self.meta, |meta_data| *meta_data = new_meta_data)
+    }
+
     pub fn force_tabular(&self, row_sep: char, col_sep: (Vec<char>, usize), ctxt: &ExecContext) {
         if self.raw.is_none() {
             return;
@@ -154,6 +158,27 @@ impl Data {
 }
 
 #[derive(Clone, Debug)]
+pub enum DataType {
+    Unknown,
+    Struct,
+    Tabular,
+    Atom,
+    Sequence,
+}
+
+impl sfmt::Display for DataType {
+    fn fmt(&self, f: &mut sfmt::Formatter<'_>) -> sfmt::Result {
+        match self {
+            DataType::Atom => f.write_str("atom"),
+            DataType::Sequence => f.write_str("sequence"),
+            DataType::Struct => f.write_str("structured"),
+            DataType::Tabular => f.write_str("tabular"),
+            DataType::Unknown => f.write_str("no data"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum MetaData {
     None,
     Struct(StructMetaData),
@@ -163,13 +188,13 @@ pub enum MetaData {
 }
 
 impl MetaData {
-    pub fn ty(&self) -> String {
+    pub fn ty(&self) -> DataType {
         match self {
-            MetaData::Atom => "atom".to_owned(),
-            MetaData::Sequence => "sequence".to_owned(),
-            MetaData::Struct(..) => "structured".to_owned(),
-            MetaData::Tabular(..) => "tabular".to_owned(),
-            MetaData::None => "no data".to_owned(),
+            MetaData::Atom => DataType::Atom,
+            MetaData::Sequence => DataType::Sequence,
+            MetaData::Struct(..) => DataType::Struct,
+            MetaData::Tabular(..) => DataType::Tabular,
+            MetaData::None => DataType::Unknown,
         }
     }
 
@@ -188,6 +213,7 @@ impl MetaData {
             (MetaData::Struct(s1), MetaData::Struct(s2)) => {
                 s1.parsed.eq_reloc(&s2.parsed, &s1.tokens, &s2.tokens)
             }
+            (MetaData::Tabular(t1), MetaData::Tabular(t2)) => t1 == t2,
             (MetaData::None, MetaData::None) => true,
             _ => false,
         }
@@ -221,13 +247,29 @@ impl StructMetaData {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TabularMetaData {
-    row_sep: char,
-    col_sep: (Vec<char>, usize),
+    pub row_sep: char,
+    pub col_sep: (Vec<char>, usize),
     /// Invariant: all rows must have the same length.
-    data: Vec<Vec<String>>,
+    pub data: Vec<Vec<String>>,
 }
 
 impl TabularMetaData {
+    pub fn new(row_sep: char, col_sep: (Vec<char>, usize)) -> Self {
+        TabularMetaData {
+            row_sep,
+            col_sep,
+            data: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize, row_sep: char, col_sep: (Vec<char>, usize)) -> Self {
+        TabularMetaData {
+            row_sep,
+            col_sep,
+            data: Vec::with_capacity(capacity),
+        }
+    }
+
     fn fmt(&self, w: &mut impl sfmt::Write, opts: &FmtOptions) -> sfmt::Result {
         let widths = if opts.truncate.is_some() {
             Vec::new()
