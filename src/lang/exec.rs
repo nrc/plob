@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 use crate::{
     Error, NumberKind, Value, ValueKind, ValueType,
     data::{self, Data, MetaData, TabularMetaData, Token, reparse::Node as RNode},
-    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, Selector},
+    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, RangeSelector, Selector},
 };
 
 pub fn help_message_for(cmd: &str) -> String {
@@ -575,6 +575,10 @@ impl Node<Expr> {
                     let result = lhs.unwrap().exec(ctxt)?;
                     eval_projection(result, s, ctxt, self.location)
                 }
+                Action::Selection(lhs, s) => {
+                    let result = lhs.unwrap().exec(ctxt)?;
+                    eval_selection(result, &s, ctxt, self.location)
+                }
             },
         }
     }
@@ -603,11 +607,45 @@ fn eval_pipe(
                 ctxt.call(&name.inner, Some(result), args, Vec::new(), action.location)?
             }
             Action::Projection(_, s) => eval_projection(result, s, ctxt, loc)?,
+            Action::Selection(_, s) => eval_selection(result, &s, ctxt, loc)?,
             // TODO reapply in pipe
         }
     }
 
     Ok(result)
+}
+
+fn eval_selection(
+    lhs: Value,
+    selector: &[Node<RangeSelector>],
+    ctxt: &mut Context,
+    loc: NodeLoc,
+) -> Result<Value, Vec<Error>> {
+    let data = match lhs.kind {
+        ValueKind::Data(data) => data,
+        ValueKind::String(_) => {
+            return Err(vec![ctxt.make_err("Cannot select over a string", loc)]);
+        }
+        ValueKind::Number(_) => {
+            return Err(vec![ctxt.make_err("Cannot select over a number", loc)]);
+        }
+        ValueKind::Bool(_) => {
+            return Err(vec![ctxt.make_err("Cannot select over a boolean", loc)]);
+        }
+        ValueKind::Error => return Ok(Value::new(ValueKind::Error)),
+        ValueKind::None => return Ok(lhs),
+    };
+
+    // TODO implementations
+    match data.ty(ctxt.runtime) {
+        data::DataType::Struct | data::DataType::Unknown => {
+            data.resolve_structural(ctxt.runtime);
+            todo!()
+        }
+        data::DataType::Tabular => todo!(),
+        data::DataType::Sequence => todo!(),
+        data::DataType::Atom => Err(vec![ctxt.make_err("Cannot select over an atom", loc)]),
+    }
 }
 
 fn eval_projection(
@@ -861,6 +899,7 @@ fn project_tabular(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::lang::parse::SingleSelector;
 
     #[test]
     fn override_args() {
@@ -932,11 +971,11 @@ Command {
         assert_eq!(result.kind.expect_data(), data);
 
         // Out of bounds selector
-        let result = eval_project(&data, Selector::Int(2), &mut ctxt);
+        let result = eval_project(&data, Selector::int(2), &mut ctxt);
         std::assert_matches::assert_matches!(result.kind, ValueKind::None);
 
         // In bounds selector
-        let result = eval_project(&data, Selector::Int(1), &mut ctxt);
+        let result = eval_project(&data, Selector::int(1), &mut ctxt);
         assert_eq_reloc(
             result,
             r#"Command {
@@ -954,7 +993,7 @@ Command {
         // Multiple selector, just one
         let result = eval_project(
             &data,
-            Selector::Seq(vec![Node::new(Selector::Int(1), 0, 0)]),
+            Selector::Seq(vec![Node::new(SingleSelector::Int(1), 0, 0)]),
             &mut ctxt,
         );
         assert_eq_reloc(
@@ -975,8 +1014,8 @@ Command {
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Int(0), 0, 0),
-                Node::new(Selector::Int(1), 0, 0),
+                Node::new(SingleSelector::Int(0), 0, 0),
+                Node::new(SingleSelector::Int(1), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1011,11 +1050,11 @@ Command {
         );
 
         // Unknown selector
-        let result = eval_project(&data, Selector::Ident("foo".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("foo".to_owned()), &mut ctxt);
         assert_eq_reloc(result, r#"{}"#, runtime);
 
         // Known selector
-        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("kind".to_owned()), &mut ctxt);
         assert_eq_reloc(
             result,
             r#"{
@@ -1035,8 +1074,8 @@ Command {
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Ident("source".to_owned()), 0, 0),
-                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("source".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("line".to_owned()), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1067,11 +1106,11 @@ Command {
         );
 
         // Unknown selector
-        let result = eval_project(&data, Selector::Ident("foo".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("foo".to_owned()), &mut ctxt);
         assert_eq_reloc(result, r#"Command {}"#, runtime);
 
         // Known selector
-        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("kind".to_owned()), &mut ctxt);
         assert_eq_reloc(
             result,
             r#"Command {
@@ -1091,8 +1130,8 @@ Command {
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Ident("source".to_owned()), 0, 0),
-                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("source".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("line".to_owned()), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1135,7 +1174,7 @@ Command {
         );
 
         // One mapped selector
-        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("kind".to_owned()), &mut ctxt);
         assert_eq_reloc(
             result,
             r#"Command {
@@ -1162,8 +1201,8 @@ Command {
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Ident("source".to_owned()), 0, 0),
-                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("source".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("line".to_owned()), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1206,7 +1245,7 @@ Command {
         );
 
         // One mapped selector
-        let result = eval_project(&data, Selector::Ident("kind".to_owned()), &mut ctxt);
+        let result = eval_project(&data, Selector::ident("kind".to_owned()), &mut ctxt);
         assert_eq_reloc(
             result,
             r#"[Command {
@@ -1233,8 +1272,8 @@ Command {
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Ident("source".to_owned()), 0, 0),
-                Node::new(Selector::Ident("line".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("source".to_owned()), 0, 0),
+                Node::new(SingleSelector::Ident("line".to_owned()), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1269,14 +1308,14 @@ i | j | k | l"#,
         // Out of bounds selector
         let result = eval_projection(
             Value::new(ValueKind::Data(data.clone())),
-            Node::new(Selector::Int(4), 0, 0),
+            Node::new(Selector::int(4), 0, 0),
             &mut ctxt,
             NodeLoc { char: 0, len: 0 },
         );
         assert!(result.is_err());
 
         // In bounds selector
-        let result = eval_project(&data, Selector::Int(1), &mut ctxt);
+        let result = eval_project(&data, Selector::int(1), &mut ctxt);
         assert_eq_tabular(
             result, r#"b
 f
@@ -1286,7 +1325,7 @@ j"#, runtime,
         // Multiple selector, just one
         let result = eval_project(
             &data,
-            Selector::Seq(vec![Node::new(Selector::Int(1), 0, 0)]),
+            Selector::Seq(vec![Node::new(SingleSelector::Int(1), 0, 0)]),
             &mut ctxt,
         );
         assert_eq_tabular(
@@ -1299,8 +1338,8 @@ j"#, runtime,
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Int(1), 0, 0),
-                Node::new(Selector::Int(3), 0, 0),
+                Node::new(SingleSelector::Int(1), 0, 0),
+                Node::new(SingleSelector::Int(3), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1316,8 +1355,8 @@ j | l"#,
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Int(3), 0, 0),
-                Node::new(Selector::Int(2), 0, 0),
+                Node::new(SingleSelector::Int(3), 0, 0),
+                Node::new(SingleSelector::Int(2), 0, 0),
             ]),
             &mut ctxt,
         );
@@ -1333,10 +1372,10 @@ l | k"#,
         let result = eval_project(
             &data,
             Selector::Seq(vec![
-                Node::new(Selector::Int(0), 0, 0),
-                Node::new(Selector::Int(1), 0, 0),
-                Node::new(Selector::Int(2), 0, 0),
-                Node::new(Selector::Int(3), 0, 0),
+                Node::new(SingleSelector::Int(0), 0, 0),
+                Node::new(SingleSelector::Int(1), 0, 0),
+                Node::new(SingleSelector::Int(2), 0, 0),
+                Node::new(SingleSelector::Int(3), 0, 0),
             ]),
             &mut ctxt,
         );

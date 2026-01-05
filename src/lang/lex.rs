@@ -162,6 +162,8 @@ pub(super) enum Operator {
     Dot,
     Bra,
     Ket,
+    SquareBra,
+    SquareKet,
     LeftArrow,
     RightArrow,
     Caret,
@@ -179,6 +181,8 @@ impl TryFrom<char> for Operator {
             ',' => Ok(Operator::Comma),
             '(' => Ok(Operator::Bra),
             ')' => Ok(Operator::Ket),
+            '[' => Ok(Operator::SquareBra),
+            ']' => Ok(Operator::SquareKet),
             '<' => Ok(Operator::LeftArrow),
             '>' => Ok(Operator::RightArrow),
             '^' => Ok(Operator::Caret),
@@ -188,7 +192,7 @@ impl TryFrom<char> for Operator {
     }
 }
 
-const OPS: [char; 9] = ['=', '.', ',', '(', ')', '<', '>', '^', '*'];
+const OPS: [char; 11] = ['=', '.', ',', '(', ')', '[', ']', '<', '>', '^', '*'];
 
 #[derive(Copy, Clone, Debug)]
 enum LexState {

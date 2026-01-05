@@ -155,26 +155,53 @@ type NamedArgList = Vec<(Node<String>, Node<Expr>)>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Action {
     Projection(Option<Box<Node<Expr>>>, Node<Selector>),
+    Selection(Option<Box<Node<Expr>>>, Vec<Node<RangeSelector>>),
     Call(Node<String>, ArgList),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Selector {
+    Single(SingleSelector),
+    All,
+    Seq(Vec<Node<SingleSelector>>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum RangeSelector {
+    Single(SingleSelector),
+    Range(Option<Node<SingleSelector>>, Option<Node<SingleSelector>>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SingleSelector {
     Int(i64),
     String(String),
     Ident(String),
-    All,
-    Seq(Vec<Node<Selector>>),
 }
 
 impl Selector {
+    #[allow(unused)]
+    pub fn int(n: i64) -> Self {
+        Selector::Single(SingleSelector::Int(n))
+    }
+
+    #[allow(unused)]
+    pub fn ident(s: String) -> Self {
+        Selector::Single(SingleSelector::Ident(s))
+    }
+
+    #[allow(unused)]
+    pub fn string(s: String) -> Self {
+        Selector::Single(SingleSelector::String(s))
+    }
+
     pub fn numeric(&self) -> Option<Vec<i64>> {
         match self {
-            Selector::Int(i) => Some(vec![*i]),
+            Selector::Single(SingleSelector::Int(i)) => Some(vec![*i]),
             Selector::Seq(ns) => ns
                 .iter()
                 .map(|n| match n.inner {
-                    Selector::Int(i) => Some(i),
+                    SingleSelector::Int(i) => Some(i),
                     _ => None,
                 })
                 .collect(),
@@ -190,7 +217,25 @@ impl Selector {
         toks: &[crate::data::Token],
     ) -> bool {
         match self {
-            Selector::Int(n) => {
+            Selector::Single(s) => s.matches(node, index, list_len, toks),
+            Selector::All => true,
+            Selector::Seq(s) => s
+                .iter()
+                .any(|s| s.inner.matches(node, index, list_len, toks)),
+        }
+    }
+}
+
+impl SingleSelector {
+    pub fn matches(
+        &self,
+        node: &crate::data::reparse::Node,
+        index: usize,
+        list_len: usize,
+        toks: &[crate::data::Token],
+    ) -> bool {
+        match self {
+            SingleSelector::Int(n) => {
                 let i = if *n < 0 {
                     list_len - (-n as usize)
                 } else {
@@ -198,7 +243,7 @@ impl Selector {
                 };
                 index == i
             }
-            Selector::String(s) | Selector::Ident(s) => match node {
+            SingleSelector::String(s) | SingleSelector::Ident(s) => match node {
                 crate::data::reparse::Node::Todo => true,
                 crate::data::reparse::Node::Error(_) => true,
                 crate::data::reparse::Node::None => false,
@@ -209,10 +254,6 @@ impl Selector {
                 }
                 crate::data::reparse::Node::Atom(_, t) => toks[*t].matches_str(s),
             },
-            Selector::All => true,
-            Selector::Seq(s) => s
-                .iter()
-                .any(|s| s.inner.matches(node, index, list_len, toks)),
         }
     }
 }
@@ -304,6 +345,8 @@ impl CommandParser {
                     return self.pipe(Some(lhs));
                 } else if let TokenKind::Operator(Operator::Dot) = &peek.kind {
                     return Ok(self.projection(Some(lhs))?.map(Expr::Action));
+                } else if let TokenKind::Operator(Operator::SquareBra) = &peek.kind {
+                    return Ok(self.selection(Some(lhs))?.map(Expr::Action));
                 } else {
                     return Ok(lhs);
                 }
@@ -430,11 +473,15 @@ impl CommandParser {
         ))
     }
 
-    /// pexpr ::= call | `.` selector
+    /// pexpr ::= call | `.` selector | `[` range_selector_list `]`
     /// call ::= ident `(` (arg),* `)`
     fn pexpr(&mut self) -> Result<Node<Action>, Token> {
         if let TokenKind::Operator(Operator::Dot) = &self.peek(0).kind {
             return self.projection(None);
+        }
+
+        if let TokenKind::Operator(Operator::SquareBra) = &self.peek(0).kind {
+            return self.selection(None);
         }
 
         let ident = self.ident()?;
@@ -456,6 +503,33 @@ impl CommandParser {
         Ok(Node::new(
             Action::Projection(lhs.map(Box::new), selector),
             dot.location.char,
+            len,
+        ))
+    }
+
+    /// selection ::= lexpr? `[` (range_selector `,`)* `]`
+    fn selection(&mut self, lhs: Option<Node<Expr>>) -> Result<Node<Action>, Token> {
+        let square_bra = self.op(Operator::SquareBra)?;
+
+        let mut selectors = Vec::new();
+        loop {
+            if let TokenKind::Operator(Operator::SquareKet) = &self.peek(0).kind {
+                break;
+            }
+            selectors.push(self.range_selector()?);
+            if self.peek(0).kind == TokenKind::Operator(Operator::Comma) {
+                self.next();
+            } else {
+                break;
+            }
+        }
+
+        let square_ket = self.op(Operator::SquareKet)?;
+        let len = square_ket.location.char - square_bra.location.char + 1;
+
+        Ok(Node::new(
+            Action::Selection(lhs.map(Box::new), selectors),
+            square_bra.location.char,
             len,
         ))
     }
@@ -491,7 +565,7 @@ impl CommandParser {
         Ok((None, expr))
     }
 
-    /// selector ::= int | ident | string | `(` selector,* `)`
+    /// selector ::= single_selector | `*` | `(` single_selector,* `)`
     fn selector(&mut self) -> Result<Node<Selector>, Token> {
         if let TokenKind::Operator(Operator::Bra) = &self.peek(0).kind {
             let bra = self.next();
@@ -500,7 +574,7 @@ impl CommandParser {
                 if let TokenKind::Operator(Operator::Ket) = &self.peek(0).kind {
                     break;
                 }
-                nested.push(self.selector()?);
+                nested.push(self.single_selector()?);
                 if self.peek(0).kind == TokenKind::Operator(Operator::Comma) {
                     self.next();
                 } else {
@@ -515,17 +589,70 @@ impl CommandParser {
             ));
         }
 
+        if let TokenKind::Operator(Operator::Star) = &self.peek(0).kind {
+            let t = self.next();
+            return Ok(Node::new(Selector::All, t.char, t.len));
+        }
+
+        self.single_selector().map(|s| s.map(Selector::Single))
+    }
+
+    /// single_selector ::= int | ident | string
+    fn single_selector(&mut self) -> Result<Node<SingleSelector>, Token> {
         let t = self.next();
         match t.kind {
-            TokenKind::Number(n) => Ok(Node::new(Selector::Int(n), t.char, t.len)),
-            TokenKind::Ident(s) => Ok(Node::new(Selector::Ident(s), t.char, t.len)),
-            TokenKind::String(s) => Ok(Node::new(Selector::String(s), t.char, t.len)),
-            TokenKind::Operator(Operator::Star) => Ok(Node::new(Selector::All, t.char, t.len)),
+            TokenKind::Number(n) => Ok(Node::new(SingleSelector::Int(n), t.char, t.len)),
+            TokenKind::Ident(s) => Ok(Node::new(SingleSelector::Ident(s), t.char, t.len)),
+            TokenKind::String(s) => Ok(Node::new(SingleSelector::String(s), t.char, t.len)),
             _ => {
                 self.restore_tok(t.clone());
                 Err(t)
             }
         }
+    }
+
+    /// range_selector ::= single_selector | single_selector? `..` single_selector?
+    fn range_selector(&mut self) -> Result<Node<RangeSelector>, Token> {
+        let start_tok = self.peek(0).clone();
+
+        // Try to parse the first single_selector
+        let first = self.single_selector().ok();
+
+        // Check if we have `..` (two consecutive dots)
+        if matches!(self.peek(0).kind, TokenKind::Operator(Operator::Dot))
+            && matches!(self.peek(1).kind, TokenKind::Operator(Operator::Dot))
+        {
+            // Consume both dots
+            self.next();
+            let second_dot = self.next();
+
+            // Try to parse the second single_selector (optional)
+            let second = self.single_selector().ok();
+
+            let end_char = second
+                .as_ref()
+                .map(|s| s.location.end())
+                .unwrap_or_else(|| second_dot.char + 1);
+
+            return Ok(Node::new(
+                RangeSelector::Range(first, second),
+                start_tok.char,
+                end_char - start_tok.char,
+            ));
+        }
+
+        // If we have a first selector but no `..`, return it as Single
+        if let Some(first) = first {
+            let len = first.location.len;
+            return Ok(Node::new(
+                RangeSelector::Single(first.inner),
+                first.location.char,
+                len,
+            ));
+        }
+
+        // No first selector and no `..`, so this is an error
+        Err(start_tok)
     }
 
     fn ident(&mut self) -> Result<Node<String>, Token> {
@@ -621,5 +748,196 @@ mod test {
         // TODO
         let _echoed = assert_echo("foo(x = $y, bar = qux())");
         let _echoed = assert_echo("foo(x = $y,)");
+    }
+
+    #[track_caller]
+    fn parse_range_selector(text: &str) -> RangeSelector {
+        let tokens = lex::Lexer::new(text.chars());
+        let mut parser = CommandParser::new(tokens.chain(Some(Token {
+            kind: TokenKind::Eof,
+            char: text.chars().count(),
+            len: 0,
+        })));
+        let result = parser.range_selector();
+        assert!(result.is_ok(), "Failed to parse range selector: {text}");
+        result.unwrap().inner
+    }
+
+    #[test]
+    fn parse_range_selector_single() {
+        // Single int selector
+        let rs = parse_range_selector("42");
+        assert!(matches!(rs, RangeSelector::Single(SingleSelector::Int(42))));
+
+        // Single ident selector
+        let rs = parse_range_selector("foo");
+        assert!(matches!(rs, RangeSelector::Single(SingleSelector::Ident(ref s)) if s == "foo"));
+
+        // Single string selector
+        let rs = parse_range_selector("\"bar\"");
+        assert!(matches!(rs, RangeSelector::Single(SingleSelector::String(ref s)) if s == "bar"));
+    }
+
+    #[test]
+    fn parse_range_selector_range() {
+        // Range with both bounds
+        let rs = parse_range_selector("1..5");
+        match rs {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Int(1)));
+                assert!(matches!(end.inner, SingleSelector::Int(5)));
+            }
+            _ => panic!("Expected Range with both bounds"),
+        }
+
+        // Range with start only
+        let rs = parse_range_selector("10..");
+        match rs {
+            RangeSelector::Range(Some(start), None) => {
+                assert!(matches!(start.inner, SingleSelector::Int(10)));
+            }
+            _ => panic!("Expected Range with start only"),
+        }
+
+        // Range with end only
+        let rs = parse_range_selector("..20");
+        match rs {
+            RangeSelector::Range(None, Some(end)) => {
+                assert!(matches!(end.inner, SingleSelector::Int(20)));
+            }
+            _ => panic!("Expected Range with end only"),
+        }
+
+        // Full range
+        let rs = parse_range_selector("..");
+        assert!(matches!(rs, RangeSelector::Range(None, None)));
+
+        // Range with identifiers
+        let rs = parse_range_selector("foo..bar");
+        match rs {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Ident(ref s) if s == "foo"));
+                assert!(matches!(end.inner, SingleSelector::Ident(ref s) if s == "bar"));
+            }
+            _ => panic!("Expected Range with both ident bounds"),
+        }
+    }
+
+    #[track_caller]
+    fn assert_selection(text: &str) -> Vec<Node<RangeSelector>> {
+        let echoed = assert_echo(text);
+        match echoed {
+            // Pipe with selection
+            Expr::Pipe(None, mut actions) if actions.len() == 1 => {
+                match actions.pop().unwrap().inner {
+                    Action::Selection(None, selectors) => selectors,
+                    _ => panic!("Expected Action::Selection in pipe"),
+                }
+            }
+            // Direct selection with lhs
+            Expr::Action(Action::Selection(_, selectors)) => selectors,
+            _ => panic!("Expected selection expression, got: {echoed:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_selection() {
+        // Single range selector
+        let selectors = assert_selection("> [1..5]");
+        assert_eq!(selectors.len(), 1);
+        match &selectors[0].inner {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Int(1)));
+                assert!(matches!(end.inner, SingleSelector::Int(5)));
+            }
+            _ => panic!("Expected Range with both bounds"),
+        }
+
+        // Multiple range selectors
+        let selectors = assert_selection("> [1..3, 5..7]");
+        assert_eq!(selectors.len(), 2);
+        match &selectors[0].inner {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Int(1)));
+                assert!(matches!(end.inner, SingleSelector::Int(3)));
+            }
+            _ => panic!("Expected Range 1..3"),
+        }
+        match &selectors[1].inner {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Int(5)));
+                assert!(matches!(end.inner, SingleSelector::Int(7)));
+            }
+            _ => panic!("Expected Range 5..7"),
+        }
+
+        // Range with start only
+        let selectors = assert_selection("> [10..]");
+        assert_eq!(selectors.len(), 1);
+        match &selectors[0].inner {
+            RangeSelector::Range(Some(start), None) => {
+                assert!(matches!(start.inner, SingleSelector::Int(10)));
+            }
+            _ => panic!("Expected Range with start only"),
+        }
+
+        // Range with end only
+        let selectors = assert_selection("> [..20]");
+        assert_eq!(selectors.len(), 1);
+        match &selectors[0].inner {
+            RangeSelector::Range(None, Some(end)) => {
+                assert!(matches!(end.inner, SingleSelector::Int(20)));
+            }
+            _ => panic!("Expected Range with end only"),
+        }
+
+        // Full range
+        let selectors = assert_selection("> [..]");
+        assert_eq!(selectors.len(), 1);
+        assert!(matches!(
+            &selectors[0].inner,
+            RangeSelector::Range(None, None)
+        ));
+
+        // Empty selection
+        let selectors = assert_selection("> []");
+        assert_eq!(selectors.len(), 0);
+
+        // Selection with lhs
+        let selectors = assert_selection("$foo[1..3]");
+        assert_eq!(selectors.len(), 1);
+
+        // Single selector (not a range)
+        let selectors = assert_selection("> [5]");
+        assert_eq!(selectors.len(), 1);
+        assert!(matches!(
+            &selectors[0].inner,
+            RangeSelector::Single(SingleSelector::Int(5))
+        ));
+
+        // Trailing comma
+        let selectors = assert_selection("> [1..3,]");
+        assert_eq!(selectors.len(), 1);
+
+        // Mixed: single and range selectors
+        let selectors = assert_selection("> [1, 3..5, 10..]");
+        assert_eq!(selectors.len(), 3);
+        assert!(matches!(
+            &selectors[0].inner,
+            RangeSelector::Single(SingleSelector::Int(1))
+        ));
+        match &selectors[1].inner {
+            RangeSelector::Range(Some(start), Some(end)) => {
+                assert!(matches!(start.inner, SingleSelector::Int(3)));
+                assert!(matches!(end.inner, SingleSelector::Int(5)));
+            }
+            _ => panic!("Expected Range 3..5"),
+        }
+        match &selectors[2].inner {
+            RangeSelector::Range(Some(start), None) => {
+                assert!(matches!(start.inner, SingleSelector::Int(10)));
+            }
+            _ => panic!("Expected Range 10.."),
+        }
     }
 }
