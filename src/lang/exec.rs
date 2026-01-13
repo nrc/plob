@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs::File, io::read_to_string, sync::LazyLock};
 use crate::{
     Error, NumberKind, Value, ValueKind, ValueType,
     data::{self, Data, MetaData, TabularMetaData, Token, reparse::Node as RNode},
-    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, RangeSelector, Selector},
+    lang::parse::{Action, CmdKind, Expr, Node, NodeLoc, RangeSelector, Selector, SingleSelector},
 };
 
 pub fn help_message_for(cmd: &str) -> String {
@@ -470,6 +470,7 @@ fn call_transpose(
 #[cfg(test)]
 static TEST_FN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 static TEST_FN: std::sync::Mutex<
     Option<Box<fn(&crate::Data, &[Option<ValueKind>], NodeLoc, &mut Context)>>,
 > = std::sync::Mutex::new(None);
@@ -636,16 +637,133 @@ fn eval_selection(
         ValueKind::None => return Ok(lhs),
     };
 
-    // TODO implementations
     match data.ty(ctxt.runtime) {
         data::DataType::Struct | data::DataType::Unknown => {
             data.resolve_structural(ctxt.runtime);
+            // TODO implementation
             todo!()
         }
-        data::DataType::Tabular => todo!(),
+        data::DataType::Tabular => select_tabular(data, selector, ctxt, loc),
         data::DataType::Sequence => todo!(),
         data::DataType::Atom => Err(vec![ctxt.make_err("Cannot select over an atom", loc)]),
     }
+}
+
+fn select_tabular(
+    data: Data,
+    selector: &[Node<RangeSelector>],
+    ctxt: &mut Context,
+    _loc: NodeLoc,
+) -> Result<Value, Vec<Error>> {
+    let new_data = data
+        .with_tabular(ctxt.runtime, |data| {
+            validate_range_selector(selector, data.data.len(), ctxt)?;
+
+            let mut new_data = TabularMetaData::with_capacity(
+                selected_len(selector, data.data.len()),
+                data.row_sep,
+                data.col_sep.clone(),
+            );
+
+            for s in selector {
+                match &s.inner {
+                    RangeSelector::Single(s) => new_data
+                        .data
+                        .push(data.data[s.unwrap_int() as usize].clone()),
+                    RangeSelector::Range(a, b) => {
+                        let a = a.as_ref().map(|s| s.unwrap_int() as usize).unwrap_or(0);
+                        let b = b
+                            .as_ref()
+                            .map(|s| s.unwrap_int() as usize)
+                            .unwrap_or(data.data.len());
+                        new_data.data.extend(data.data[a..b].iter().cloned());
+                    }
+                }
+            }
+
+            Ok::<_, Vec<Error>>(MetaData::Tabular(new_data))
+        })
+        .unwrap()?;
+
+    let data = Data::new(None, ctxt.runtime);
+    data.set_meta_data(new_data, ctxt.runtime);
+    Ok(Value::new(ValueKind::Data(data)))
+}
+
+fn validate_range_selector(
+    selector: &[Node<RangeSelector>],
+    rows: usize,
+    ctxt: &mut Context,
+) -> Result<(), Vec<Error>> {
+    fn expect_int(
+        s: &SingleSelector,
+        ctxt: &mut Context,
+        loc: NodeLoc,
+    ) -> Result<usize, Vec<Error>> {
+        match s {
+            SingleSelector::Int(i) if *i >= 0 => Ok(*i as usize),
+            _ => Err(vec![ctxt.make_err("Expected numeric selector", loc)]),
+        }
+    }
+
+    for s in selector {
+        match &s.inner {
+            RangeSelector::Single(a) => {
+                let a = expect_int(a, ctxt, s.location)?;
+                if a >= rows {
+                    return Err(vec![ctxt.make_err("Out of bounds selector", s.location)]);
+                }
+            }
+            RangeSelector::Range(a, b) => match (a, b) {
+                (None, None) => {}
+                (None, Some(b)) => {
+                    let b = expect_int(b, ctxt, b.location)?;
+                    if b > rows {
+                        return Err(vec![ctxt.make_err("Out of bounds selector", s.location)]);
+                    }
+                }
+                (Some(a), None) => {
+                    let a = expect_int(a, ctxt, a.location)?;
+                    if a > rows {
+                        return Err(vec![ctxt.make_err("Out of bounds selector", s.location)]);
+                    }
+                }
+                (Some(a), Some(b)) => {
+                    let a = expect_int(a, ctxt, a.location)?;
+                    let b = expect_int(b, ctxt, b.location)?;
+                    if b > rows {
+                        return Err(vec![ctxt.make_err("Out of bounds selector", s.location)]);
+                    }
+                    if b < a {
+                        return Err(vec![ctxt.make_err(
+                            "End of range must be larger than start of range",
+                            s.location,
+                        )]);
+                    }
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+/// Precondition: `validate_range_selector(data, rows).is_ok()`
+fn selected_len(selector: &[Node<RangeSelector>], rows: usize) -> usize {
+    let mut result = 0;
+
+    for s in selector {
+        match &s.inner {
+            RangeSelector::Single(_) => result += 1,
+            RangeSelector::Range(a, b) => {
+                let a = a.as_ref().map(|s| s.unwrap_int() as usize).unwrap_or(0);
+                let b = b.as_ref().map(|s| s.unwrap_int() as usize).unwrap_or(rows);
+                result += b - a;
+            }
+        }
+    }
+
+    result
 }
 
 fn eval_projection(
@@ -899,7 +1017,10 @@ fn project_tabular(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::lang::parse::SingleSelector;
+    use crate::lang::{
+        lex::Lexer,
+        parse::{CommandParser, SingleSelector},
+    };
 
     #[test]
     fn override_args() {
@@ -1022,7 +1143,7 @@ Command {
         let result = result.kind.expect_data();
         runtime.with_meta_datas(&[result.meta, data.meta], |meta| {
             assert!(
-                meta[0].eq_reloc(&meta[1]),
+                meta[0].eq_reloc(meta[1]),
                 "Not equal:\n{}\n\n{}",
                 &meta[0],
                 &meta[1]
@@ -1382,7 +1503,7 @@ l | k"#,
         let result = result.kind.expect_data();
         runtime.with_meta_datas(&[result.meta, data.meta], |meta| {
             assert!(
-                meta[0].eq_reloc(&meta[1]),
+                meta[0].eq_reloc(meta[1]),
                 "Not equal:\n{}\n\n{}",
                 &meta[0],
                 &meta[1]
@@ -1457,5 +1578,253 @@ l | k"#,
                 data::MetaData::Tabular(expected)
             );
         });
+    }
+
+    #[test]
+    fn select_tabular() {
+        let runtime = &crate::Runtime::new_test();
+        let (mut ctxt, data) = init_tabular(
+            r#"a | b | c | d
+e | f | g | h
+i | j | k | l
+m | n | o | p
+q | r | s | t"#,
+            runtime,
+        );
+
+        // Single row selection
+        let result = eval_select(&data, "0", &mut ctxt);
+        assert_eq_tabular(result, r#"a | b | c | d"#, runtime);
+
+        let result = eval_select(&data, "2", &mut ctxt);
+        assert_eq_tabular(result, r#"i | j | k | l"#, runtime);
+
+        // Range selection - both bounds
+        let result = eval_select(&data, "0..2", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"a | b | c | d
+e | f | g | h"#,
+            runtime,
+        );
+
+        let result = eval_select(&data, "1..4", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"e | f | g | h
+i | j | k | l
+m | n | o | p"#,
+            runtime,
+        );
+
+        // Range selection - only start
+        let result = eval_select(&data, "3..", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"m | n | o | p
+q | r | s | t"#,
+            runtime,
+        );
+
+        // Range selection - only end
+        let result = eval_select(&data, "..3", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"a | b | c | d
+e | f | g | h
+i | j | k | l"#,
+            runtime,
+        );
+
+        // Range selection - all rows
+        let result = eval_select(&data, "..", &mut ctxt);
+        let result_data = result.kind.expect_data();
+        runtime.with_meta_datas(&[result_data.meta, data.meta], |meta| {
+            assert!(
+                meta[0].eq_reloc(meta[1]),
+                "Not equal:\n{}\n\n{}",
+                &meta[0],
+                &meta[1]
+            );
+        });
+
+        // Multiple single selectors
+        let result = eval_select(&data, "0, 2, 4", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"a | b | c | d
+i | j | k | l
+q | r | s | t"#,
+            runtime,
+        );
+
+        // Mixed selectors - single and range
+        let result = eval_select(&data, "0, 2..4", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"a | b | c | d
+i | j | k | l
+m | n | o | p"#,
+            runtime,
+        );
+
+        // Multiple ranges
+        let result = eval_select(&data, "0..2, 3..5", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"a | b | c | d
+e | f | g | h
+m | n | o | p
+q | r | s | t"#,
+            runtime,
+        );
+
+        // Out of order selection
+        let result = eval_select(&data, "4, 2, 0", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"q | r | s | t
+i | j | k | l
+a | b | c | d"#,
+            runtime,
+        );
+
+        // Duplicate selections
+        let result = eval_select(&data, "1, 1", &mut ctxt);
+        assert_eq_tabular(
+            result,
+            r#"e | f | g | h
+e | f | g | h"#,
+            runtime,
+        );
+
+        // Empty range (start == end)
+        let result = eval_select(&data, "2..2", &mut ctxt);
+        let result = result.kind.expect_data();
+        runtime.with_meta_data(result.meta, |meta| {
+            assert!(meta.eq_reloc(&data::MetaData::Tabular(TabularMetaData::new(
+                '\n',
+                (vec!['|'], 0)
+            ))),);
+        });
+    }
+
+    #[track_caller]
+    fn eval_select(data: &crate::Data, selector: &str, ctxt: &mut Context) -> Value {
+        let selector = parse_ranges(selector);
+        eval_selection(
+            Value::new(ValueKind::Data(data.clone())),
+            &selector,
+            ctxt,
+            NodeLoc { char: 0, len: 0 },
+        )
+        .unwrap()
+    }
+
+    fn parse_ranges(r: &str) -> Vec<Node<RangeSelector>> {
+        let src = format!("[{r}]");
+        let lexer = Lexer::new(src.chars());
+        let mut parser = CommandParser::new(lexer);
+        match parser.selection(None).unwrap().inner {
+            Action::Selection(_, ranges) => ranges,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn range_selector_len() {
+        let selector = parse_ranges("..");
+        assert_eq!(selected_len(&selector, 0), 0);
+        assert_eq!(selected_len(&selector, 3), 3);
+
+        let selector = parse_ranges("0..");
+        assert_eq!(selected_len(&selector, 0), 0);
+        assert_eq!(selected_len(&selector, 3), 3);
+        let selector = parse_ranges("2..");
+        assert_eq!(selected_len(&selector, 2), 0);
+        assert_eq!(selected_len(&selector, 3), 1);
+        let selector = parse_ranges("..2");
+        assert_eq!(selected_len(&selector, 2), 2);
+        assert_eq!(selected_len(&selector, 3), 2);
+        let selector = parse_ranges("..0");
+        assert_eq!(selected_len(&selector, 0), 0);
+        let selector = parse_ranges("0..0");
+        assert_eq!(selected_len(&selector, 0), 0);
+        let selector = parse_ranges("0..3");
+        assert_eq!(selected_len(&selector, 3), 3);
+        assert_eq!(selected_len(&selector, 5), 3);
+        let selector = parse_ranges("2..5");
+        assert_eq!(selected_len(&selector, 5), 3);
+        let selector = parse_ranges("2..2");
+        assert_eq!(selected_len(&selector, 5), 0);
+
+        let selector = parse_ranges(".., .., 0..0");
+        assert_eq!(selected_len(&selector, 0), 0);
+        assert_eq!(selected_len(&selector, 3), 6);
+        let selector = parse_ranges("1..3, 2..5");
+        assert_eq!(selected_len(&selector, 5), 5);
+    }
+
+    #[test]
+    fn test_validate_range_selector() {
+        let mut ctxt = Context {
+            runtime: &crate::Runtime::new_test(),
+            src_line: 0,
+            history_position: 0,
+        };
+
+        let selector = parse_ranges("..");
+        validate_range_selector(&selector, 0, &mut ctxt).unwrap();
+        validate_range_selector(&selector, 42, &mut ctxt).unwrap();
+
+        // Single ranges - valid
+        let selector = parse_ranges("0");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("3");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("4");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+
+        // Multiple ranges - valid
+        let selector = parse_ranges("0, 2, 4");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("0..2, 3");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("1, 2..4");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("0..2, 3..5");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+
+        // Multiple ranges, out of order - valid (order doesn't matter for validation)
+        let selector = parse_ranges("4, 2, 0");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+        let selector = parse_ranges("3..5, 0..2");
+        validate_range_selector(&selector, 5, &mut ctxt).unwrap();
+
+        // Error: out of bounds single/multiple selector
+        let selector = parse_ranges("5");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+        let selector = parse_ranges("10");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+        let selector = parse_ranges("0, 5");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+
+        // Error: out of bounds range selector (end)
+        let selector = parse_ranges("0..6");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+        let selector = parse_ranges("..6");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+
+        // Error: out of bounds range selector (start)
+        let selector = parse_ranges("6..");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+        let selector = parse_ranges("6..10");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+
+        // Error: range where end < start
+        let selector = parse_ranges("3..1");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
+        let selector = parse_ranges("4..2");
+        assert!(validate_range_selector(&selector, 5, &mut ctxt).is_err());
     }
 }

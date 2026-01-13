@@ -256,6 +256,13 @@ impl SingleSelector {
             },
         }
     }
+
+    pub fn unwrap_int(&self) -> i64 {
+        match self {
+            SingleSelector::Int(i) => *i,
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub(super) struct CommandParser {
@@ -508,7 +515,7 @@ impl CommandParser {
     }
 
     /// selection ::= lexpr? `[` (range_selector `,`)* `]`
-    fn selection(&mut self, lhs: Option<Node<Expr>>) -> Result<Node<Action>, Token> {
+    pub fn selection(&mut self, lhs: Option<Node<Expr>>) -> Result<Node<Action>, Token> {
         let square_bra = self.op(Operator::SquareBra)?;
 
         let mut selectors = Vec::new();

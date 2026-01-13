@@ -117,10 +117,10 @@ impl Data {
             return;
         }
         runtime.with_meta_data(self.meta, |metadata| {
-            if let MetaData::None = metadata {
-                if let Ok(Some(smd)) = parse_structural(self.raw.as_ref().unwrap()) {
-                    *metadata = MetaData::Struct(smd);
-                }
+            if let MetaData::None = metadata
+                && let Ok(Some(smd)) = parse_structural(self.raw.as_ref().unwrap())
+            {
+                *metadata = MetaData::Struct(smd);
             }
         })
     }
@@ -329,7 +329,7 @@ impl TabularMetaData {
 
 fn write_truncated(w: &mut impl sfmt::Write, s: &str, len: usize) -> sfmt::Result {
     if s.chars().count() <= len {
-        w.write_str(&s)?;
+        w.write_str(s)?;
         (s.len()..len).for_each(|_| w.write_char(' ').unwrap());
         return Ok(());
     }

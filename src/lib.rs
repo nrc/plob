@@ -117,7 +117,7 @@ impl Runtime {
     #[cfg(test)]
     fn with_meta_datas<T>(&self, indicies: &[usize], f: impl FnOnce(&[&MetaData]) -> T) -> T {
         let metas = self.metadata.borrow_mut();
-        let metadata: Vec<&MetaData> = indicies.iter().map(|i| metas.get(&i).unwrap()).collect();
+        let metadata: Vec<&MetaData> = indicies.iter().map(|i| metas.get(i).unwrap()).collect();
         f(&metadata)
     }
 
@@ -150,9 +150,8 @@ impl Value {
     }
 
     fn resolve(&mut self, runtime: &Runtime) {
-        match &mut self.kind {
-            ValueKind::Data(d) => d.resolve_structural(runtime),
-            _ => {}
+        if let ValueKind::Data(d) = &mut self.kind {
+            d.resolve_structural(runtime);
         }
     }
 
@@ -389,7 +388,7 @@ mod test {
             eprint!("recevied `{s}` ");
             let mut expected_exact = self.expected_exact.borrow_mut();
 
-            if let Some((i, _)) = expected_exact.iter().enumerate().find(|(_, ss)| *ss == &s) {
+            if let Some((i, _)) = expected_exact.iter().enumerate().find(|(_, ss)| *ss == s) {
                 expected_exact.swap_remove(i);
                 eprintln!("found (exact)");
                 return;
